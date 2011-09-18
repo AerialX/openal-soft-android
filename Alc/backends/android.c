@@ -254,7 +254,7 @@ void alc_android_deinit(void)
     (*env)->DeleteGlobalRef(env, cAudioTrack);
 }
 
-void alc_android_probe(int type)
+void alc_android_probe(enum DevProbe type)
 {
     switch(type)
     {
