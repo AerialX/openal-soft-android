@@ -41,6 +41,9 @@
 /* Define if we have the Android backend */
 #cmakedefine HAVE_ANDROID
 
+/* Define if we want to use the low latency Android backend */
+#cmakedefine HAVE_ANDROID_LOW_LATENCY
+
 /* Define if we have the Wave Writer backend */
 #cmakedefine HAVE_WAVE
 

@@ -89,7 +89,12 @@ static void* thread_function(void* arg)
     jobject track = (*env)->NewObject(env, cAudioTrack, mAudioTrack,
         STREAM_MUSIC, sampleRateInHz, channelConfig, audioFormat, device->NumUpdates * bufferSizeInBytes, MODE_STREAM);
 
+#ifdef HAVE_ANDROID_LOW_LATENCY
+    int started = 0;
+    size_t overallBytes = 0;
+#else
     (*env)->CallNonvirtualVoidMethod(env, track, cAudioTrack, mPlay);
+#endif
 
     jarray buffer = (*env)->NewByteArray(env, bufferSizeInBytes);
 
@@ -102,7 +107,26 @@ static void* thread_function(void* arg)
             aluMixData(device, pBuffer, bufferSizeInSamples);
             (*env)->ReleasePrimitiveArrayCritical(env, buffer, pBuffer, 0);
 
-            (*env)->CallNonvirtualIntMethod(env, track, cAudioTrack, mWrite, buffer, 0, bufferSizeInBytes);
+#ifdef HAVE_ANDROID_LOW_LATENCY
+            if (bufferSizeInBytes >= 0)
+            {
+                if (started)
+                {
+#endif
+                    (*env)->CallNonvirtualIntMethod(env, track, cAudioTrack, mWrite, buffer, 0, bufferSizeInBytes);
+#ifdef HAVE_ANDROID_LOW_LATENCY
+                }
+                else
+                {
+                    overallBytes += (*env)->CallNonvirtualIntMethod(env, track, cAudioTrack, mWrite, buffer, 0, bufferSizeInBytes);
+                    if (overallBytes >= (device->NumUpdates * bufferSizeInBytes))
+                    {
+                        (*env)->CallNonvirtualVoidMethod(env, track, cAudioTrack, mPlay);
+                        started = 1;
+                    }
+                }
+            }
+#endif
         }
         else
         {
@@ -159,6 +183,11 @@ static ALCenum android_open_playback(ALCdevice *device, const ALCchar *deviceNam
     data = (AndroidData*)calloc(1, sizeof(*data));
     device->szDeviceName = strdup(deviceName);
     device->ExtraData = data;
+
+#ifdef HAVE_ANDROID_LOW_LATENCY
+    device->Frequency = 22050;
+    device->NumUpdates = 1;
+#endif
 
     return ALC_NO_ERROR;
 }
