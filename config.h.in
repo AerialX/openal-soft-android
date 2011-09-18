@@ -38,6 +38,9 @@
 /* Define if we have the OpenSL backend */
 #cmakedefine HAVE_OPENSL
 
+/* Define if we have the OpenSL 1.1 backend */
+#cmakedefine HAVE_OPENSL_1_1
+
 /* Define if we have the Android backend */
 #cmakedefine HAVE_ANDROID
 
