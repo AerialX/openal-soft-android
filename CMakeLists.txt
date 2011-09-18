@@ -36,6 +36,7 @@ OPTION(PORTAUDIO  "Check for PortAudio backend"        ON)
 OPTION(PULSEAUDIO "Check for PulseAudio backend"       ON)
 OPTION(COREAUDIO  "Check for CoreAudio backend"        ON)
 OPTION(OPENSL     "Check for OpenSL backend"           ON)
+OPTION(ANDROID    "Check for Android backend"          ON)
 OPTION(WAVE    "Enable Wave Writer backend"            ON)
 
 OPTION(REQUIRE_ALSA       "Require ALSA backend"               OFF)
@@ -49,6 +50,7 @@ OPTION(REQUIRE_PORTAUDIO  "Require PortAudio backend"          OFF)
 OPTION(REQUIRE_PULSEAUDIO "Require PulseAudio backend"         OFF)
 OPTION(REQUIRE_COREAUDIO  "Require CoreAudio backend"          OFF)
 OPTION(REQUIRE_OPENSL     "Require OpenSL backend"             OFF)
+OPTION(REQUIRE_ANDROID    "Require Android backend"            OFF)
 
 OPTION(DLOPEN  "Check for the dlopen API for loading optional libs"  ON)
 
@@ -421,6 +423,7 @@ SET(HAVE_PORTAUDIO  0)
 SET(HAVE_PULSEAUDIO 0)
 SET(HAVE_COREAUDIO  0)
 SET(HAVE_OPENSL     0)
+SET(HAVE_ANDROID    0)
 SET(HAVE_WAVE       0)
 
 # Check ALSA backend
@@ -616,6 +619,22 @@ IF(OPENSL)
 ENDIF()
 IF(REQUIRE_OPENSL AND NOT HAVE_OPENSL)
     MESSAGE(FATAL_ERROR "Failed to enabled required OpenSL backend")
+ENDIF()
+
+# Check for Android backend
+IF(ANDROID)
+    CHECK_INCLUDE_FILE(android/api-level.h HAVE_ANDROID_API_LEVEL_H)
+    IF(HAVE_ANDROID_API_LEVEL_H)
+        CHECK_SYMBOL_EXISTS(__ANDROID_API__ "android/api-level.h" HAVE_ANDROID_INTERNAL)
+        IF(HAVE_ANDROID_INTERNAL)
+            SET(HAVE_ANDROID 1)
+            SET(ALC_OBJS  ${ALC_OBJS} Alc/backends/android.c)
+            SET(BACKENDS  "${BACKENDS} Android,")
+        ENDIF()
+    ENDIF()
+ENDIF()
+IF(REQUIRE_ANDROID AND NOT HAVE_ANDROID)
+    MESSAGE(FATAL_ERROR "Failed to enabled required Android backend")
 ENDIF()
 
 # Optionally enable the Wave Writer backend
