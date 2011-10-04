@@ -14,10 +14,9 @@
 #include <ieeefp.h>
 #endif
 
-#ifndef M_PI
-#define M_PI           3.14159265358979323846  /* pi */
-#define M_PI_2         1.57079632679489661923  /* pi/2 */
-#endif
+
+#define F_PI    (3.14159265358979323846f)  /* pi */
+#define F_PI_2  (1.57079632679489661923f)  /* pi/2 */
 
 #ifdef HAVE_POWF
 #define aluPow(x,y) (powf((x),(y)))
@@ -31,10 +30,28 @@
 #define aluSqrt(x) ((ALfloat)sqrt((double)(x)))
 #endif
 
+#ifdef HAVE_COSF
+#define aluCos(x) (cosf((x)))
+#else
+#define aluCos(x) ((ALfloat)cos((double)(x)))
+#endif
+
+#ifdef HAVE_SINF
+#define aluSin(x) (sinf((x)))
+#else
+#define aluSin(x) ((ALfloat)sin((double)(x)))
+#endif
+
 #ifdef HAVE_ACOSF
 #define aluAcos(x) (acosf((x)))
 #else
 #define aluAcos(x) ((ALfloat)acos((double)(x)))
+#endif
+
+#ifdef HAVE_ASINF
+#define aluAsin(x) (asinf((x)))
+#else
+#define aluAsin(x) ((ALfloat)asin((double)(x)))
 #endif
 
 #ifdef HAVE_ATANF
@@ -43,10 +60,28 @@
 #define aluAtan(x) ((ALfloat)atan((double)(x)))
 #endif
 
+#ifdef HAVE_ATAN2F
+#define aluAtan2(x,y) (atan2f((x),(y)))
+#else
+#define aluAtan2(x,y) ((ALfloat)atan2((double)(x),(double)(y)))
+#endif
+
 #ifdef HAVE_FABSF
 #define aluFabs(x) (fabsf((x)))
 #else
 #define aluFabs(x) ((ALfloat)fabs((double)(x)))
+#endif
+
+#ifdef HAVE_LOG10F
+#define aluLog10(x) (log10f((x)))
+#else
+#define aluLog10(x) ((ALfloat)log10((double)(x)))
+#endif
+
+#ifdef HAVE_FLOORF
+#define aluFloor(x) (floorf((x)))
+#else
+#define aluFloor(x) ((ALfloat)floor((double)(x)))
 #endif
 
 #define QUADRANT_NUM  128
@@ -141,20 +176,56 @@ static __inline ALint clampi(ALint val, ALint min, ALint max)
 { return mini(max, maxi(min, val)); }
 
 
-static __inline ALdouble lerp(ALdouble val1, ALdouble val2, ALdouble mu)
+static __inline ALfloat lerp(ALfloat val1, ALfloat val2, ALfloat mu)
 {
     return val1 + (val2-val1)*mu;
 }
-static __inline ALdouble cubic(ALdouble val0, ALdouble val1, ALdouble val2, ALdouble val3, ALdouble mu)
+static __inline ALfloat cubic(ALfloat val0, ALfloat val1, ALfloat val2, ALfloat val3, ALfloat mu)
 {
-    ALdouble mu2 = mu*mu;
-    ALdouble a0 = -0.5*val0 +  1.5*val1 + -1.5*val2 +  0.5*val3;
-    ALdouble a1 =      val0 + -2.5*val1 +  2.0*val2 + -0.5*val3;
-    ALdouble a2 = -0.5*val0             +  0.5*val2;
-    ALdouble a3 =                  val1;
+    ALfloat mu2 = mu*mu;
+    ALfloat a0 = -0.5f*val0 +  1.5f*val1 + -1.5f*val2 +  0.5f*val3;
+    ALfloat a1 =       val0 + -2.5f*val1 +  2.0f*val2 + -0.5f*val3;
+    ALfloat a2 = -0.5f*val0              +  0.5f*val2;
+    ALfloat a3 =                    val1;
 
     return a0*mu*mu2 + a1*mu2 + a2*mu + a3;
 }
+
+
+static __inline int SetMixerFPUMode(void)
+{
+#if defined(_FPU_GETCW) && defined(_FPU_SETCW)
+    fpu_control_t fpuState, newState;
+    _FPU_GETCW(fpuState);
+    newState = fpuState&~(_FPU_EXTENDED|_FPU_DOUBLE|_FPU_SINGLE |
+                          _FPU_RC_NEAREST|_FPU_RC_DOWN|_FPU_RC_UP|_FPU_RC_ZERO);
+    newState |= _FPU_SINGLE | _FPU_RC_ZERO;
+    _FPU_SETCW(newState);
+#else
+    int fpuState;
+#if defined(HAVE__CONTROLFP)
+    fpuState = _controlfp(0, 0);
+    (void)_controlfp(_RC_CHOP|_PC_24, _MCW_RC|_MCW_PC);
+#elif defined(HAVE_FESETROUND)
+    fpuState = fegetround();
+    fesetround(FE_TOWARDZERO);
+#endif
+#endif
+    return fpuState;
+}
+
+static __inline void RestoreFPUMode(int state)
+{
+#if defined(_FPU_GETCW) && defined(_FPU_SETCW)
+    fpu_control_t fpuState = state;
+    _FPU_SETCW(fpuState);
+#elif defined(HAVE__CONTROLFP)
+    _controlfp(state, _MCW_RC|_MCW_PC);
+#elif defined(HAVE_FESETROUND)
+    fesetround(state);
+#endif
+}
+
 
 ALvoid aluInitPanning(ALCdevice *Device);
 ALint aluCart2LUTpos(ALfloat re, ALfloat im);
@@ -169,6 +240,9 @@ ALvoid MixSource(struct ALsource *Source, ALCdevice *Device, ALuint SamplesToDo)
 
 ALvoid aluMixData(ALCdevice *device, ALvoid *buffer, ALsizei size);
 ALvoid aluHandleDisconnect(ALCdevice *device);
+
+extern ALfloat ConeScale;
+extern ALfloat ZScale;
 
 #ifdef __cplusplus
 }

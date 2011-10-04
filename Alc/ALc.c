@@ -376,8 +376,8 @@ static volatile ALCenum g_eLastNullDeviceError = ALC_NO_ERROR;
 
 // Default context extensions
 static const ALchar alExtList[] =
-    "AL_EXT_DOUBLE AL_EXT_EXPONENT_DISTANCE AL_EXT_FLOAT32 AL_EXT_IMA4 "
-    "AL_EXT_LINEAR_DISTANCE AL_EXT_MCFORMATS AL_EXT_MULAW "
+    "AL_EXT_ALAW AL_EXT_DOUBLE AL_EXT_EXPONENT_DISTANCE AL_EXT_FLOAT32 "
+    "AL_EXT_IMA4 AL_EXT_LINEAR_DISTANCE AL_EXT_MCFORMATS AL_EXT_MULAW "
     "AL_EXT_MULAW_MCFORMATS AL_EXT_OFFSET AL_EXT_source_distance_model "
     "AL_LOKI_quadriphonic AL_SOFTX_buffer_samples AL_SOFT_buffer_sub_data "
     "AL_SOFTX_deferred_updates AL_SOFT_loop_points "
@@ -395,12 +395,6 @@ enum LogLevel LogLevel = LogWarning;
 #else
 enum LogLevel LogLevel = LogError;
 #endif
-
-// Cone scalar
-ALdouble ConeScale = 0.5;
-
-// Localized Z scalar for mono sources
-ALdouble ZScale = 1.0;
 
 /* Flag to trap ALC device errors */
 static ALCboolean TrapALCError = ALC_FALSE;
@@ -499,11 +493,11 @@ static void alc_init(void)
 
     str = getenv("__ALSOFT_HALF_ANGLE_CONES");
     if(str && (strcasecmp(str, "true") == 0 || strtol(str, NULL, 0) == 1))
-        ConeScale = 1.0;
+        ConeScale = 1.0f;
 
     str = getenv("__ALSOFT_REVERSE_Z");
     if(str && (strcasecmp(str, "true") == 0 || strtol(str, NULL, 0) == 1))
-        ZScale = -1.0;
+        ZScale = -1.0f;
 
     str = getenv("__ALSOFT_TRAP_ERROR");
     if(str && (strcasecmp(str, "true") == 0 || strtol(str, NULL, 0) == 1))
@@ -1010,7 +1004,7 @@ static void alcSetError(ALCdevice *device, ALCenum errorCode)
         if(IsDebuggerPresent())
             DebugBreak();
 #elif defined(SIGTRAP)
-        kill(getpid(), SIGTRAP);
+        raise(SIGTRAP);
 #endif
     }
 
@@ -1029,6 +1023,7 @@ static void alcSetError(ALCdevice *device, ALCenum errorCode)
 static ALCboolean UpdateDeviceParams(ALCdevice *device, const ALCint *attrList)
 {
     ALCcontext *context;
+    int oldMode;
     ALuint i;
 
     // Check for attributes
@@ -1205,6 +1200,7 @@ static ALCboolean UpdateDeviceParams(ALCdevice *device, const ALCint *attrList)
     }
     TRACE("Stereo duplication %s\n", (device->Flags&DEVICE_DUPLICATE_STEREO)?"enabled":"disabled");
 
+    oldMode = SetMixerFPUMode();
     context = device->ContextList;
     while(context)
     {
@@ -1250,6 +1246,7 @@ static ALCboolean UpdateDeviceParams(ALCdevice *device, const ALCint *attrList)
 
         context = context->next;
     }
+    RestoreFPUMode(oldMode);
     UnlockDevice(device);
 
     return ALC_TRUE;

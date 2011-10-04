@@ -9,6 +9,10 @@
 #include <fenv.h>
 #endif
 
+#ifdef HAVE_FPU_CONTROL_H
+#include <fpu_control.h>
+#endif
+
 #include "AL/al.h"
 #include "AL/alc.h"
 #include "AL/alext.h"
@@ -59,7 +63,8 @@ ALC_API void ALC_APIENTRY alcRenderSamplesSOFT(ALCdevice *device, ALCvoid *buffe
 #define AL_BYTE3                                 0x1408
 #define AL_UNSIGNED_BYTE3                        0x1409
 #define AL_MULAW                                 0x1410
-#define AL_IMA4                                  0x1411
+#define AL_ALAW                                  0x1411
+#define AL_IMA4                                  0x1412
 
 /* Channel configurations */
 #define AL_MONO                                  0x1500
@@ -93,19 +98,25 @@ ALC_API void ALC_APIENTRY alcRenderSamplesSOFT(ALCdevice *device, ALCvoid *buffe
 #define AL_7POINT1_16                            0x1211
 #define AL_7POINT1_32F                           0x1212
 
+/* Buffer attributes */
+#define AL_INTERNAL_FORMAT                       0x2008
+#define AL_BYTE_LENGTH                           0x2009
+#define AL_SAMPLE_LENGTH                         0x200A
+#define AL_SEC_LENGTH                            0x200B
+
 typedef void (AL_APIENTRY*LPALBUFFERSAMPLESSOFT)(ALuint,ALuint,ALenum,ALsizei,ALenum,ALenum,const ALvoid*);
 typedef void (AL_APIENTRY*LPALBUFFERSUBSAMPLESSOFT)(ALuint,ALsizei,ALsizei,ALenum,ALenum,const ALvoid*);
 typedef void (AL_APIENTRY*LPALGETBUFFERSAMPLESSOFT)(ALuint,ALsizei,ALsizei,ALenum,ALenum,ALvoid*);
 typedef ALboolean (AL_APIENTRY*LPALISBUFFERFORMATSUPPORTEDSOFT)(ALenum);
 #ifdef AL_ALEXT_PROTOTYPES
 AL_API void AL_APIENTRY alBufferSamplesSOFT(ALuint buffer,
-    ALuint samplerate, ALenum internalformat, ALsizei frames,
+    ALuint samplerate, ALenum internalformat, ALsizei samples,
     ALenum channels, ALenum type, const ALvoid *data);
 AL_API void AL_APIENTRY alBufferSubSamplesSOFT(ALuint buffer,
-    ALsizei offset, ALsizei frames,
+    ALsizei offset, ALsizei samples,
     ALenum channels, ALenum type, const ALvoid *data);
 AL_API void AL_APIENTRY alGetBufferSamplesSOFT(ALuint buffer,
-    ALsizei offset, ALsizei frames,
+    ALsizei offset, ALsizei samples,
     ALenum channels, ALenum type, ALvoid *data);
 AL_API ALboolean AL_APIENTRY alIsBufferFormatSupportedSOFT(ALenum format);
 #endif
@@ -239,6 +250,76 @@ static __inline ALboolean CompExchangePtr(void *volatile*ptr, void *oldval, void
     return __sync_bool_compare_and_swap(ptr, oldval, newval);
 }
 
+#elif defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
+
+static __inline int xaddl(volatile int *dest, int incr)
+{
+    int ret;
+    __asm__ __volatile__("lock; xaddl %0,(%1)"
+                         : "=r" (ret)
+                         : "r" (dest), "0" (incr)
+                         : "memory");
+    return ret;
+}
+
+typedef int RefCount;
+static __inline RefCount IncrementRef(volatile RefCount *ptr)
+{ return xaddl(ptr, 1)+1; }
+static __inline RefCount DecrementRef(volatile RefCount *ptr)
+{ return xaddl(ptr, -1)-1; }
+
+static __inline int ExchangeInt(volatile int *dest, int newval)
+{
+    int ret;
+    __asm__ __volatile__("lock; xchgl %0,(%1)"
+                         : "=r" (ret)
+                         : "r" (dest), "0" (newval)
+                         : "memory");
+    return ret;
+}
+
+static __inline ALboolean CompExchangeInt(volatile int *dest, int oldval, int newval)
+{
+    int ret;
+    __asm__ __volatile__("lock; cmpxchgl %2,(%1)"
+                         : "=a" (ret)
+                         : "r" (dest), "r" (newval), "0" (oldval)
+                         : "memory");
+    return ret == oldval;
+}
+
+static __inline void *ExchangePtr(void *volatile*dest, void *newval)
+{
+    void *ret;
+    __asm__ __volatile__(
+#ifdef __i386__
+                         "lock; xchgl %0,(%1)"
+#else
+                         "lock; xchgq %0,(%1)"
+#endif
+                         : "=r" (ret)
+                         : "r" (dest), "0" (newval)
+                         : "memory"
+    );
+    return ret;
+}
+
+static __inline ALboolean CompExchangePtr(void *volatile*dest, void *oldval, void *newval)
+{
+    void *ret;
+    __asm__ __volatile__(
+#ifdef __i386__
+                         "lock; cmpxchgl %2,(%1)"
+#else
+                         "lock; cmpxchgq %2,(%1)"
+#endif
+                         : "=a" (ret)
+                         : "r" (dest), "r" (newval), "0" (oldval)
+                         : "memory"
+    );
+    return ret == oldval;
+}
+
 #elif defined(_WIN32)
 
 typedef LONG RefCount;
@@ -370,9 +451,9 @@ extern "C" {
 #define DEFAULT_OUTPUT_RATE        (44100)
 
 #define SPEEDOFSOUNDMETRESPERSEC   (343.3f)
-#define AIRABSORBGAINHF            (0.99426) /* -0.05dB */
+#define AIRABSORBGAINHF            (0.99426f) /* -0.05dB */
 
-#define LOWPASSFREQCUTOFF          (5000)
+#define LOWPASSFREQREF             (5000)
 
 
 struct Hrtf;
@@ -394,6 +475,30 @@ static __inline ALuint NextPowerOf2(ALuint value)
     }
     return powerOf2;
 }
+
+/* Fast float-to-int conversion. Assumes the FPU is already in round-to-zero
+ * mode. */
+static __inline ALint fastf2i(ALfloat f)
+{
+    ALint i;
+#if defined(_MSC_VER) && !defined(_WIN64)
+    __asm fld f
+    __asm fistp i
+#elif defined(__GNUC__)
+    __asm__ __volatile__("flds %1\n\t"
+                         "fistpl %0\n\t"
+                         : "=m" (i)
+                         : "m" (f));
+#else
+    i = (ALint)f;
+#endif
+    return i;
+}
+
+/* Fast float-to-uint conversion. Assumes the FPU is already in round-to-zero
+ * mode. */
+static __inline ALuint fastf2u(ALfloat f)
+{ return fastf2i(f); }
 
 
 enum DevProbe {
@@ -600,6 +705,14 @@ struct ALCdevice_struct
 // Specifies if the device is currently running
 #define DEVICE_RUNNING                           (1<<31)
 
+#define LookupBuffer(m, k) ((struct ALbuffer*)LookupUIntMapKey(&(m)->BufferMap, (k)))
+#define LookupEffect(m, k) ((struct ALeffect*)LookupUIntMapKey(&(m)->EffectMap, (k)))
+#define LookupFilter(m, k) ((struct ALfilter*)LookupUIntMapKey(&(m)->FilterMap, (k)))
+#define RemoveBuffer(m, k) ((struct ALbuffer*)PopUIntMapValue(&(m)->BufferMap, (k)))
+#define RemoveEffect(m, k) ((struct ALeffect*)PopUIntMapValue(&(m)->EffectMap, (k)))
+#define RemoveFilter(m, k) ((struct ALfilter*)PopUIntMapValue(&(m)->FilterMap, (k)))
+
+
 struct ALCcontext_struct
 {
     volatile RefCount ref;
@@ -634,6 +747,11 @@ struct ALCcontext_struct
 
     ALCcontext *volatile next;
 };
+
+#define LookupSource(m, k) ((struct ALsource*)LookupUIntMapKey(&(m)->SourceMap, (k)))
+#define LookupEffectSlot(m, k) ((struct ALeffectslot*)LookupUIntMapKey(&(m)->EffectSlotMap, (k)))
+#define RemoveSource(m, k) ((struct ALsource*)PopUIntMapValue(&(m)->SourceMap, (k)))
+#define RemoveEffectSlot(m, k) ((struct ALeffectslot*)PopUIntMapValue(&(m)->EffectSlotMap, (k)))
 
 ALCcontext *GetContextRef(void);
 
@@ -720,9 +838,6 @@ extern enum LogLevel LogLevel;
         AL_PRINT(__VA_ARGS__);                                                \
 } while(0)
 
-
-extern ALdouble ConeScale;
-extern ALdouble ZScale;
 
 extern ALint RTPrioLevel;
 

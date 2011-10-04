@@ -36,8 +36,6 @@ ALboolean DisabledEffects[MAX_EFFECTS];
 
 static void InitEffectParams(ALeffect *effect, ALenum type);
 
-#define LookupEffect(m, k) ((ALeffect*)LookupUIntMapKey(&(m), (k)))
-#define RemoveEffect(m, k) ((ALeffect*)PopUIntMapValue(&(m), (k)))
 
 AL_API ALvoid AL_APIENTRY alGenEffects(ALsizei n, ALuint *effects)
 {
@@ -86,7 +84,7 @@ AL_API ALvoid AL_APIENTRY alGenEffects(ALsizei n, ALuint *effects)
     ALCcontext_DecRef(Context);
 }
 
-AL_API ALvoid AL_APIENTRY alDeleteEffects(ALsizei n, ALuint *effects)
+AL_API ALvoid AL_APIENTRY alDeleteEffects(ALsizei n, const ALuint *effects)
 {
     ALCcontext *Context;
     ALCdevice *device;
@@ -107,7 +105,7 @@ AL_API ALvoid AL_APIENTRY alDeleteEffects(ALsizei n, ALuint *effects)
             if(!effects[i])
                 continue;
 
-            if(LookupEffect(device->EffectMap, effects[i]) == NULL)
+            if(LookupEffect(device, effects[i]) == NULL)
             {
                 alSetError(Context, AL_INVALID_NAME);
                 n = 0;
@@ -118,7 +116,7 @@ AL_API ALvoid AL_APIENTRY alDeleteEffects(ALsizei n, ALuint *effects)
         for(i = 0;i < n;i++)
         {
             // Recheck that the effect is valid, because there could be duplicated names
-            if((ALEffect=RemoveEffect(device->EffectMap, effects[i])) == NULL)
+            if((ALEffect=RemoveEffect(device, effects[i])) == NULL)
                 continue;
             FreeThunkEntry(ALEffect->effect);
 
@@ -138,7 +136,7 @@ AL_API ALboolean AL_APIENTRY alIsEffect(ALuint effect)
     Context = GetContextRef();
     if(!Context) return AL_FALSE;
 
-    result = ((!effect || LookupEffect(Context->Device->EffectMap, effect)) ?
+    result = ((!effect || LookupEffect(Context->Device, effect)) ?
               AL_TRUE : AL_FALSE);
 
     ALCcontext_DecRef(Context);
@@ -156,7 +154,7 @@ AL_API ALvoid AL_APIENTRY alEffecti(ALuint effect, ALenum param, ALint iValue)
     if(!Context) return;
 
     Device = Context->Device;
-    if((ALEffect=LookupEffect(Device->EffectMap, effect)) != NULL)
+    if((ALEffect=LookupEffect(Device, effect)) != NULL)
     {
         if(param == AL_EFFECT_TYPE)
         {
@@ -186,7 +184,7 @@ AL_API ALvoid AL_APIENTRY alEffecti(ALuint effect, ALenum param, ALint iValue)
     ALCcontext_DecRef(Context);
 }
 
-AL_API ALvoid AL_APIENTRY alEffectiv(ALuint effect, ALenum param, ALint *piValues)
+AL_API ALvoid AL_APIENTRY alEffectiv(ALuint effect, ALenum param, const ALint *piValues)
 {
     ALCcontext *Context;
     ALCdevice  *Device;
@@ -196,7 +194,7 @@ AL_API ALvoid AL_APIENTRY alEffectiv(ALuint effect, ALenum param, ALint *piValue
     if(!Context) return;
 
     Device = Context->Device;
-    if((ALEffect=LookupEffect(Device->EffectMap, effect)) != NULL)
+    if((ALEffect=LookupEffect(Device, effect)) != NULL)
     {
         /* Call the appropriate handler */
         ALeffect_SetParamiv(ALEffect, Context, param, piValues);
@@ -217,7 +215,7 @@ AL_API ALvoid AL_APIENTRY alEffectf(ALuint effect, ALenum param, ALfloat flValue
     if(!Context) return;
 
     Device = Context->Device;
-    if((ALEffect=LookupEffect(Device->EffectMap, effect)) != NULL)
+    if((ALEffect=LookupEffect(Device, effect)) != NULL)
     {
         /* Call the appropriate handler */
         ALeffect_SetParamf(ALEffect, Context, param, flValue);
@@ -228,7 +226,7 @@ AL_API ALvoid AL_APIENTRY alEffectf(ALuint effect, ALenum param, ALfloat flValue
     ALCcontext_DecRef(Context);
 }
 
-AL_API ALvoid AL_APIENTRY alEffectfv(ALuint effect, ALenum param, ALfloat *pflValues)
+AL_API ALvoid AL_APIENTRY alEffectfv(ALuint effect, ALenum param, const ALfloat *pflValues)
 {
     ALCcontext *Context;
     ALCdevice  *Device;
@@ -238,7 +236,7 @@ AL_API ALvoid AL_APIENTRY alEffectfv(ALuint effect, ALenum param, ALfloat *pflVa
     if(!Context) return;
 
     Device = Context->Device;
-    if((ALEffect=LookupEffect(Device->EffectMap, effect)) != NULL)
+    if((ALEffect=LookupEffect(Device, effect)) != NULL)
     {
         /* Call the appropriate handler */
         ALeffect_SetParamfv(ALEffect, Context, param, pflValues);
@@ -259,7 +257,7 @@ AL_API ALvoid AL_APIENTRY alGetEffecti(ALuint effect, ALenum param, ALint *piVal
     if(!Context) return;
 
     Device = Context->Device;
-    if((ALEffect=LookupEffect(Device->EffectMap, effect)) != NULL)
+    if((ALEffect=LookupEffect(Device, effect)) != NULL)
     {
         if(param == AL_EFFECT_TYPE)
         {
@@ -287,7 +285,7 @@ AL_API ALvoid AL_APIENTRY alGetEffectiv(ALuint effect, ALenum param, ALint *piVa
     if(!Context) return;
 
     Device = Context->Device;
-    if((ALEffect=LookupEffect(Device->EffectMap, effect)) != NULL)
+    if((ALEffect=LookupEffect(Device, effect)) != NULL)
     {
         /* Call the appropriate handler */
         ALeffect_GetParamiv(ALEffect, Context, param, piValues);
@@ -308,7 +306,7 @@ AL_API ALvoid AL_APIENTRY alGetEffectf(ALuint effect, ALenum param, ALfloat *pfl
     if(!Context) return;
 
     Device = Context->Device;
-    if((ALEffect=LookupEffect(Device->EffectMap, effect)) != NULL)
+    if((ALEffect=LookupEffect(Device, effect)) != NULL)
     {
         /* Call the appropriate handler */
         ALeffect_GetParamf(ALEffect, Context, param, pflValue);
@@ -329,7 +327,7 @@ AL_API ALvoid AL_APIENTRY alGetEffectfv(ALuint effect, ALenum param, ALfloat *pf
     if(!Context) return;
 
     Device = Context->Device;
-    if((ALEffect=LookupEffect(Device->EffectMap, effect)) != NULL)
+    if((ALEffect=LookupEffect(Device, effect)) != NULL)
     {
         /* Call the appropriate handler */
         ALeffect_GetParamfv(ALEffect, Context, param, pflValues);
@@ -1003,43 +1001,6 @@ static void echo_GetParamfv(ALeffect *effect, ALCcontext *context, ALenum param,
 }
 
 
-static void mod_SetParami(ALeffect *effect, ALCcontext *context, ALenum param, ALint val)
-{
-    switch(param)
-    {
-        case AL_RING_MODULATOR_FREQUENCY:
-            if(val >= AL_RING_MODULATOR_MIN_FREQUENCY &&
-               val <= AL_RING_MODULATOR_MAX_FREQUENCY)
-                effect->Modulator.Frequency = val;
-            else
-                alSetError(context, AL_INVALID_VALUE);
-            break;
-
-        case AL_RING_MODULATOR_HIGHPASS_CUTOFF:
-            if(val >= AL_RING_MODULATOR_MIN_HIGHPASS_CUTOFF &&
-               val <= AL_RING_MODULATOR_MAX_HIGHPASS_CUTOFF)
-                effect->Modulator.HighPassCutoff = val;
-            else
-                alSetError(context, AL_INVALID_VALUE);
-            break;
-
-        case AL_RING_MODULATOR_WAVEFORM:
-            if(val >= AL_RING_MODULATOR_MIN_WAVEFORM &&
-               val <= AL_RING_MODULATOR_MAX_WAVEFORM)
-                effect->Modulator.Waveform = val;
-            else
-                alSetError(context, AL_INVALID_VALUE);
-            break;
-
-        default:
-            alSetError(context, AL_INVALID_ENUM);
-            break;
-    }
-}
-static void mod_SetParamiv(ALeffect *effect, ALCcontext *context, ALenum param, const ALint *vals)
-{
-    mod_SetParami(effect, context, param, vals[0]);
-}
 static void mod_SetParamf(ALeffect *effect, ALCcontext *context, ALenum param, ALfloat val)
 {
     switch(param)
@@ -1068,6 +1029,32 @@ static void mod_SetParamf(ALeffect *effect, ALCcontext *context, ALenum param, A
 static void mod_SetParamfv(ALeffect *effect, ALCcontext *context, ALenum param, const ALfloat *vals)
 {
     mod_SetParamf(effect, context, param, vals[0]);
+}
+static void mod_SetParami(ALeffect *effect, ALCcontext *context, ALenum param, ALint val)
+{
+    switch(param)
+    {
+        case AL_RING_MODULATOR_FREQUENCY:
+        case AL_RING_MODULATOR_HIGHPASS_CUTOFF:
+            mod_SetParamf(effect, context, param, (ALfloat)val);
+            break;
+
+        case AL_RING_MODULATOR_WAVEFORM:
+            if(val >= AL_RING_MODULATOR_MIN_WAVEFORM &&
+               val <= AL_RING_MODULATOR_MAX_WAVEFORM)
+                effect->Modulator.Waveform = val;
+            else
+                alSetError(context, AL_INVALID_VALUE);
+            break;
+
+        default:
+            alSetError(context, AL_INVALID_ENUM);
+            break;
+    }
+}
+static void mod_SetParamiv(ALeffect *effect, ALCcontext *context, ALenum param, const ALint *vals)
+{
+    mod_SetParami(effect, context, param, vals[0]);
 }
 
 static void mod_GetParami(ALeffect *effect, ALCcontext *context, ALenum param, ALint *val)

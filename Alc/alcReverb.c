@@ -48,85 +48,109 @@ typedef struct ALverbState {
     // fragmentation and management code.
     ALfloat  *SampleBuffer;
     ALuint    TotalSamples;
+
     // Master effect low-pass filter (2 chained 1-pole filters).
     FILTER    LpFilter;
     ALfloat   LpHistory[2];
+
     struct {
         // Modulator delay line.
         DelayLine Delay;
+
         // The vibrato time is tracked with an index over a modulus-wrapped
         // range (in samples).
         ALuint    Index;
         ALuint    Range;
+
         // The depth of frequency change (also in samples) and its filter.
         ALfloat   Depth;
         ALfloat   Coeff;
         ALfloat   Filter;
     } Mod;
+
     // Initial effect delay.
     DelayLine Delay;
     // The tap points for the initial delay.  First tap goes to early
     // reflections, the last to late reverb.
     ALuint    DelayTap[2];
+
     struct {
         // Output gain for early reflections.
         ALfloat   Gain;
+
         // Early reflections are done with 4 delay lines.
         ALfloat   Coeff[4];
         DelayLine Delay[4];
         ALuint    Offset[4];
+
         // The gain for each output channel based on 3D panning (only for the
         // EAX path).
         ALfloat   PanGain[MAXCHANNELS];
     } Early;
+
     // Decorrelator delay line.
     DelayLine Decorrelator;
     // There are actually 4 decorrelator taps, but the first occurs at the
     // initial sample.
     ALuint    DecoTap[3];
+
     struct {
         // Output gain for late reverb.
         ALfloat   Gain;
+
         // Attenuation to compensate for the modal density and decay rate of
         // the late lines.
         ALfloat   DensityGain;
+
         // The feed-back and feed-forward all-pass coefficient.
         ALfloat   ApFeedCoeff;
+
         // Mixing matrix coefficient.
         ALfloat   MixCoeff;
+
         // Late reverb has 4 parallel all-pass filters.
         ALfloat   ApCoeff[4];
         DelayLine ApDelay[4];
         ALuint    ApOffset[4];
+
         // In addition to 4 cyclical delay lines.
         ALfloat   Coeff[4];
         DelayLine Delay[4];
         ALuint    Offset[4];
+
         // The cyclical delay lines are 1-pole low-pass filtered.
         ALfloat   LpCoeff[4];
         ALfloat   LpSample[4];
+
         // The gain for each output channel based on 3D panning (only for the
         // EAX path).
         ALfloat   PanGain[MAXCHANNELS];
     } Late;
+
     struct {
         // Attenuation to compensate for the modal density and decay rate of
         // the echo line.
         ALfloat   DensityGain;
+
         // Echo delay and all-pass lines.
         DelayLine Delay;
         DelayLine ApDelay;
+
         ALfloat   Coeff;
         ALfloat   ApFeedCoeff;
         ALfloat   ApCoeff;
+
         ALuint    Offset;
         ALuint    ApOffset;
+
         // The echo line is 1-pole low-pass filtered.
         ALfloat   LpCoeff;
         ALfloat   LpSample;
+
         // Echo mixing coefficients.
         ALfloat   MixCoeff[2];
     } Echo;
+
     // The current read offset for all delay lines.
     ALuint Offset;
 
@@ -237,7 +261,7 @@ static __inline ALfloat EAXModulation(ALverbState *State, ALfloat in)
     // Calculate the sinus rythm (dependent on modulation time and the
     // sampling rate).  The center of the sinus is moved to reduce the delay
     // of the effect when the time or depth are low.
-    sinus = 1.0f - cos(2.0f * M_PI * State->Mod.Index / State->Mod.Range);
+    sinus = 1.0f - aluCos(F_PI*2.0f * State->Mod.Index / State->Mod.Range);
 
     // The depth determines the range over which to read the input samples
     // from, so it must be filtered to reduce the distortion caused by even
@@ -247,7 +271,7 @@ static __inline ALfloat EAXModulation(ALverbState *State, ALfloat in)
 
     // Calculate the read offset and fraction between it and the next sample.
     frac   = (1.0f + (State->Mod.Filter * sinus));
-    offset = (ALuint)frac;
+    offset = fastf2u(frac);
     frac  -= offset;
 
     // Get the two samples crossed by the offset, and feed the delay line
@@ -610,7 +634,7 @@ static ALuint CalcLineLength(ALfloat length, ALintptrEXT offset, ALuint frequenc
 
     // All line lengths are powers of 2, calculated from their lengths, with
     // an additional sample in case of rounding errors.
-    samples = NextPowerOf2((ALuint)(length * frequency) + 1);
+    samples = NextPowerOf2(fastf2u(length * frequency) + 1);
     // All lines share a single sample buffer.
     Delay->Mask = samples - 1;
     Delay->Line = (ALfloat*)offset;
@@ -733,15 +757,15 @@ static ALboolean ReverbDeviceUpdate(ALeffectState *effect, ALCdevice *Device)
     // so their offsets only need to be calculated once.
     for(index = 0;index < 4;index++)
     {
-        State->Early.Offset[index] = (ALuint)(EARLY_LINE_LENGTH[index] *
+        State->Early.Offset[index] = fastf2u(EARLY_LINE_LENGTH[index] *
+                                             frequency);
+        State->Late.ApOffset[index] = fastf2u(ALLPASS_LINE_LENGTH[index] *
                                               frequency);
-        State->Late.ApOffset[index] = (ALuint)(ALLPASS_LINE_LENGTH[index] *
-                                               frequency);
     }
 
     // The echo all-pass filter line length is static, so its offset only
     // needs to be calculated once.
-    State->Echo.ApOffset = (ALuint)(ECHO_ALLPASS_LENGTH * frequency);
+    State->Echo.ApOffset = fastf2u(ECHO_ALLPASS_LENGTH * frequency);
 
     return AL_TRUE;
 }
@@ -757,14 +781,14 @@ static __inline ALfloat CalcDecayCoeff(ALfloat length, ALfloat decayTime)
 // reaches -60 dB.
 static __inline ALfloat CalcDecayLength(ALfloat coeff, ALfloat decayTime)
 {
-    return log10(coeff) * decayTime / -3.0f/*log10(0.001)*/;
+    return aluLog10(coeff) * decayTime / aluLog10(0.001f)/*-60 dB*/;
 }
 
 // Calculate the high frequency parameter for the I3DL2 coefficient
 // calculation.
 static __inline ALfloat CalcI3DL2HFreq(ALfloat hfRef, ALuint frequency)
 {
-    return cos(2.0f * M_PI * hfRef / frequency);
+    return aluCos(F_PI*2.0f * hfRef / frequency);
 }
 
 // Calculate an attenuation to be applied to the input of any echo models to
@@ -794,12 +818,12 @@ static __inline ALvoid CalcMatrixCoeffs(ALfloat diffusion, ALfloat *x, ALfloat *
 
     // The matrix is of order 4, so n is sqrt (4 - 1).
     n = aluSqrt(3.0f);
-    t = diffusion * atan(n);
+    t = diffusion * aluAtan(n);
 
     // Calculate the first mixing matrix coefficient.
-    *x = cos(t);
+    *x = aluCos(t);
     // Calculate the second mixing matrix coefficient.
-    *y = sin(t) / n;
+    *y = aluSin(t) / n;
 }
 
 // Calculate the limited HF ratio for use with the late reverb low-pass
@@ -852,7 +876,7 @@ static __inline ALfloat CalcDampingCoeff(ALfloat hfRatio, ALfloat length, ALfloa
 // downswing will sound stronger than the upswing.
 static ALvoid UpdateModulator(ALfloat modTime, ALfloat modDepth, ALuint frequency, ALverbState *State)
 {
-    ALfloat length;
+    ALuint range;
 
     /* Modulation is calculated in two parts.
      *
@@ -862,15 +886,10 @@ static ALvoid UpdateModulator(ALfloat modTime, ALfloat modDepth, ALuint frequenc
      * minimum (1 sample) and when the timing changes, the index is rescaled
      * to the new range (to keep the sinus consistent).
      */
-    length = modTime * frequency;
-    if (length >= 1.0f) {
-       State->Mod.Index = (ALuint)(State->Mod.Index * length /
-                                   State->Mod.Range);
-       State->Mod.Range = (ALuint)length;
-    } else {
-       State->Mod.Index = 0;
-       State->Mod.Range = 1;
-    }
+    range = maxu(fastf2u(modTime*frequency), 1);
+    State->Mod.Index = (ALuint)(State->Mod.Index * (ALuint64)range /
+                                State->Mod.Range);
+    State->Mod.Range = range;
 
     /* The modulation depth effects the amount of frequency change over the
      * range of the sinus.  It needs to be scaled by the modulation time so
@@ -888,8 +907,8 @@ static ALvoid UpdateModulator(ALfloat modTime, ALfloat modDepth, ALuint frequenc
 static ALvoid UpdateDelayLine(ALfloat earlyDelay, ALfloat lateDelay, ALuint frequency, ALverbState *State)
 {
     // Calculate the initial delay taps.
-    State->DelayTap[0] = (ALuint)(earlyDelay * frequency);
-    State->DelayTap[1] = (ALuint)((earlyDelay + lateDelay) * frequency);
+    State->DelayTap[0] = fastf2u(earlyDelay * frequency);
+    State->DelayTap[1] = fastf2u((earlyDelay + lateDelay) * frequency);
 }
 
 // Update the early reflections gain and line coefficients.
@@ -926,7 +945,7 @@ static ALvoid UpdateDecorrelator(ALfloat density, ALuint frequency, ALverbState 
     {
         length = (DECO_FRACTION * aluPow(DECO_MULTIPLIER, (ALfloat)index)) *
                  LATE_LINE_LENGTH[0] * (1.0f + (density * LATE_LINE_MULTIPLIER));
-        State->DecoTap[index] = (ALuint)(length * frequency);
+        State->DecoTap[index] = fastf2u(length * frequency);
     }
 }
 
@@ -971,7 +990,7 @@ static ALvoid UpdateLateLines(ALfloat reverbGain, ALfloat lateGain, ALfloat xMix
                                                     LATE_LINE_MULTIPLIER));
 
         // Calculate the delay offset for each cyclical delay line.
-        State->Late.Offset[index] = (ALuint)(length * frequency);
+        State->Late.Offset[index] = fastf2u(length * frequency);
 
         // Calculate the gain (coefficient) for each cyclical line.
         State->Late.Coeff[index] = CalcDecayCoeff(length, decayTime);
@@ -992,7 +1011,7 @@ static ALvoid UpdateLateLines(ALfloat reverbGain, ALfloat lateGain, ALfloat xMix
 static ALvoid UpdateEchoLine(ALfloat reverbGain, ALfloat lateGain, ALfloat echoTime, ALfloat decayTime, ALfloat diffusion, ALfloat echoDepth, ALfloat hfRatio, ALfloat cw, ALuint frequency, ALverbState *State)
 {
     // Update the offset and coefficient for the echo delay line.
-    State->Echo.Offset = (ALuint)(echoTime * frequency);
+    State->Echo.Offset = fastf2u(echoTime * frequency);
 
     // Calculate the decay coefficient for the echo line.
     State->Echo.Coeff = CalcDecayCoeff(echoTime, decayTime);
@@ -1112,7 +1131,7 @@ static ALvoid ReverbUpdate(ALeffectState *effect, ALCcontext *Context, const ALe
 
     // Calculate the master low-pass filter (from the master effect HF gain).
     if(isEAX) cw = CalcI3DL2HFreq(Slot->effect.Reverb.HFReference, frequency);
-    else cw = CalcI3DL2HFreq(LOWPASSFREQCUTOFF, frequency);
+    else cw = CalcI3DL2HFreq(LOWPASSFREQREF, frequency);
     // This is done with 2 chained 1-pole filters, so no need to square g.
     State->LpFilter.coeff = lpCoeffCalc(Slot->effect.Reverb.GainHF, cw);
 

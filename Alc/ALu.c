@@ -37,6 +37,13 @@
 #include "bs2b.h"
 
 
+/* Cone scalar */
+ALfloat ConeScale = 0.5f;
+
+/* Localized Z scalar for mono sources */
+ALfloat ZScale = 1.0f;
+
+
 static __inline ALvoid aluCrossproduct(const ALfloat *inVector1, const ALfloat *inVector2, ALfloat *outVector)
 {
     outVector[0] = inVector1[1]*inVector2[2] - inVector1[2]*inVector2[1];
@@ -161,7 +168,7 @@ ALvoid CalcNonAttnSourceParams(ALsource *ALSource, const ALCcontext *ALContext)
                 ALSource->Params.Step = maxstep<<FRACTIONBITS;
             else
             {
-                ALSource->Params.Step = Pitch*FRACTIONONE;
+                ALSource->Params.Step = fastf2i(Pitch*FRACTIONONE);
                 if(ALSource->Params.Step == 0)
                     ALSource->Params.Step = 1;
             }
@@ -211,8 +218,8 @@ ALvoid CalcNonAttnSourceParams(ALsource *ALSource, const ALCcontext *ALContext)
             DryGain *= aluSqrt(2.0f/4.0f);
             for(c = 0;c < 2;c++)
             {
-                pos = aluCart2LUTpos(cos(angles_Rear[c] * (M_PI/180.0)),
-                                     sin(angles_Rear[c] * (M_PI/180.0)));
+                pos = aluCart2LUTpos(aluCos(F_PI/180.0f * angles_Rear[c]),
+                                     aluSin(F_PI/180.0f * angles_Rear[c]));
                 SpeakerGain = Device->PanningLUT[pos];
 
                 for(i = 0;i < (ALint)Device->NumChan;i++)
@@ -284,7 +291,7 @@ ALvoid CalcNonAttnSourceParams(ALsource *ALSource, const ALCcontext *ALContext)
                 /* Get the static HRIR coefficients and delays for this
                  * channel. */
                 GetLerpedHrtfCoeffs(ALContext->Device->Hrtf,
-                                    0.0, angles[c] * (M_PI/180.0),
+                                    0.0f, F_PI/180.0f * angles[c],
                                     DryGain*ListenerGain,
                                     ALSource->Params.HrtfCoeffs[c],
                                     ALSource->Params.HrtfDelay[c]);
@@ -301,8 +308,8 @@ ALvoid CalcNonAttnSourceParams(ALsource *ALSource, const ALCcontext *ALContext)
                 SrcMatrix[c][LFE] += DryGain * ListenerGain;
                 continue;
             }
-            pos = aluCart2LUTpos(cos(angles[c] * (M_PI/180.0)),
-                                 sin(angles[c] * (M_PI/180.0)));
+            pos = aluCart2LUTpos(aluCos(F_PI/180.0f * angles[c]),
+                                 aluSin(F_PI/180.0f * angles[c]));
             SpeakerGain = Device->PanningLUT[pos];
 
             for(i = 0;i < (ALint)Device->NumChan;i++)
@@ -321,7 +328,7 @@ ALvoid CalcNonAttnSourceParams(ALsource *ALSource, const ALCcontext *ALContext)
 
     /* Update filter coefficients. Calculations based on the I3DL2
      * spec. */
-    cw = cos(2.0*M_PI * LOWPASSFREQCUTOFF / Frequency);
+    cw = aluCos(F_PI*2.0f * LOWPASSFREQREF / Frequency);
 
     /* We use two chained one-pole filters, so we need to take the
      * square root of the squared gain, which is the same as the base
@@ -572,13 +579,30 @@ ALvoid CalcSourceParams(ALsource *ALSource, const ALCcontext *ALContext)
                                    AirAbsorptionFactor*EffectiveDist);
     }
 
-    //3. Apply directional soundcones
-    Angle = aluAcos(aluDotproduct(Direction,SourceToListener)) * (180.0/M_PI);
+    if(WetGainAuto)
+    {
+        /* Apply a decay-time transformation to the wet path, based on the
+         * attenuation of the dry path.
+         *
+         * Using the approximate (effective) source to listener distance, the
+         * initial decay of the reverb effect is calculated and applied to the
+         * wet path.
+         */
+        for(i = 0;i < NumSends;i++)
+        {
+            if(DecayDistance[i] > 0.0f)
+                WetGain[i] *= aluPow(0.001f /* -60dB */,
+                                     EffectiveDist / DecayDistance[i]);
+        }
+    }
+
+    /* Calculate directional soundcones */
+    Angle = aluAcos(aluDotproduct(Direction,SourceToListener)) * (180.0f/F_PI);
     if(Angle >= InnerAngle && Angle <= OuterAngle)
     {
         ALfloat scale = (Angle-InnerAngle) / (OuterAngle-InnerAngle);
-        ConeVolume = lerp(1.0, ALSource->flOuterGain, scale);
-        ConeHF = lerp(1.0, ALSource->OuterGainHF, scale);
+        ConeVolume = lerp(1.0f, ALSource->flOuterGain, scale);
+        ConeHF = lerp(1.0f, ALSource->OuterGainHF, scale);
     }
     else if(Angle > OuterAngle)
     {
@@ -617,23 +641,6 @@ ALvoid CalcSourceParams(ALsource *ALSource, const ALCcontext *ALContext)
     {
         WetGain[i]   *= ALSource->Send[i].WetGain * ListenerGain;
         WetGainHF[i] *= ALSource->Send[i].WetGainHF;
-    }
-
-    if(WetGainAuto)
-    {
-        /* Apply a decay-time transformation to the wet path, based on the
-         * attenuation of the dry path.
-         *
-         * Using the approximate (effective) source to listener distance, the
-         * initial decay of the reverb effect is calculated and applied to the
-         * wet path.
-         */
-        for(i = 0;i < NumSends;i++)
-        {
-            if(DecayDistance[i] > 0.0f)
-                WetGain[i] *= aluPow(0.001f /* -60dB */,
-                                     EffectiveDist / DecayDistance[i]);
-        }
     }
 
     // Calculate Velocity
@@ -676,7 +683,7 @@ ALvoid CalcSourceParams(ALsource *ALSource, const ALCcontext *ALContext)
                 ALSource->Params.Step = maxstep<<FRACTIONBITS;
             else
             {
-                ALSource->Params.Step = Pitch*FRACTIONONE;
+                ALSource->Params.Step = fastf2i(Pitch*FRACTIONONE);
                 if(ALSource->Params.Step == 0)
                     ALSource->Params.Step = 1;
             }
@@ -709,8 +716,8 @@ ALvoid CalcSourceParams(ALsource *ALSource, const ALCcontext *ALContext)
             // Calculate elevation and azimuth only when the source is not at
             // the listener.  This prevents +0 and -0 Z from producing
             // inconsistent panning.
-            ev = asin(Position[1]);
-            az = atan2(Position[0], -Position[2]*ZScale);
+            ev = aluAsin(Position[1]);
+            az = aluAtan2(Position[0], -Position[2]*ZScale);
         }
 
         // Check to see if the HRIR is already moving.
@@ -772,7 +779,7 @@ ALvoid CalcSourceParams(ALsource *ALSource, const ALCcontext *ALContext)
         DirGain = aluSqrt(Position[0]*Position[0] + Position[2]*Position[2]);
         // elevation adjustment for directional gain. this sucks, but
         // has low complexity
-        AmbientGain = aluSqrt(1.0/Device->NumChan);
+        AmbientGain = aluSqrt(1.0f/Device->NumChan);
         for(i = 0;i < MAXCHANNELS;i++)
         {
             ALuint i2;
@@ -790,7 +797,7 @@ ALvoid CalcSourceParams(ALsource *ALSource, const ALCcontext *ALContext)
         ALSource->Params.Send[i].WetGain = WetGain[i];
 
     /* Update filter coefficients. */
-    cw = cos(2.0*M_PI * LOWPASSFREQCUTOFF / Frequency);
+    cw = aluCos(F_PI*2.0f * LOWPASSFREQREF / Frequency);
 
     ALSource->Params.iirFilter.coeff = lpCoeffCalc(DryGainHF, cw);
     for(i = 0;i < NumSends;i++)
@@ -807,7 +814,7 @@ static __inline ALshort aluF2S(ALfloat val)
 {
     if(val > 1.0f) return 32767;
     if(val < -1.0f) return -32768;
-    return (ALint)(val*32767.0f);
+    return fastf2i(val*32767.0f);
 }
 static __inline ALushort aluF2US(ALfloat val)
 { return aluF2S(val)+32768; }
@@ -945,15 +952,7 @@ ALvoid aluMixData(ALCdevice *device, ALvoid *buffer, ALsizei size)
     int fpuState;
     ALuint i, c;
 
-#if defined(HAVE_FESETROUND)
-    fpuState = fegetround();
-    fesetround(FE_TOWARDZERO);
-#elif defined(HAVE__CONTROLFP)
-    fpuState = _controlfp(0, 0);
-    (void)_controlfp(_RC_CHOP, _MCW_RC);
-#else
-    (void)fpuState;
-#endif
+    fpuState = SetMixerFPUMode();
 
     while(size > 0)
     {
@@ -1000,7 +999,7 @@ ALvoid aluMixData(ALCdevice *device, ALvoid *buffer, ALsizei size)
                 for(c = 0;c < SamplesToDo;c++)
                 {
                     (*slot)->WetBuffer[c] += (*slot)->ClickRemoval[0];
-                    (*slot)->ClickRemoval[0] -= (*slot)->ClickRemoval[0] / 256.0f;
+                    (*slot)->ClickRemoval[0] -= (*slot)->ClickRemoval[0] * (1.0f/256.0f);
                 }
                 (*slot)->ClickRemoval[0] += (*slot)->PendingClicks[0];
                 (*slot)->PendingClicks[0] = 0.0f;
@@ -1027,7 +1026,7 @@ ALvoid aluMixData(ALCdevice *device, ALvoid *buffer, ALsizei size)
             for(i = 0;i < SamplesToDo;i++)
             {
                 device->DryBuffer[i][FRONT_CENTER] += device->ClickRemoval[FRONT_CENTER];
-                device->ClickRemoval[FRONT_CENTER] -= device->ClickRemoval[FRONT_CENTER] / 256.0f;
+                device->ClickRemoval[FRONT_CENTER] -= device->ClickRemoval[FRONT_CENTER] * (1.0f/256.0f);
             }
             device->ClickRemoval[FRONT_CENTER] += device->PendingClicks[FRONT_CENTER];
             device->PendingClicks[FRONT_CENTER] = 0.0f;
@@ -1040,7 +1039,7 @@ ALvoid aluMixData(ALCdevice *device, ALvoid *buffer, ALsizei size)
                 for(c = 0;c < 2;c++)
                 {
                     device->DryBuffer[i][c] += device->ClickRemoval[c];
-                    device->ClickRemoval[c] -= device->ClickRemoval[c] / 256.0f;
+                    device->ClickRemoval[c] -= device->ClickRemoval[c] * (1.0f/256.0f);
                 }
             }
             for(c = 0;c < 2;c++)
@@ -1056,7 +1055,7 @@ ALvoid aluMixData(ALCdevice *device, ALvoid *buffer, ALsizei size)
                 for(c = 0;c < MAXCHANNELS;c++)
                 {
                     device->DryBuffer[i][c] += device->ClickRemoval[c];
-                    device->ClickRemoval[c] -= device->ClickRemoval[c] / 256.0f;
+                    device->ClickRemoval[c] -= device->ClickRemoval[c] * (1.0f/256.0f);
                 }
             }
             for(c = 0;c < MAXCHANNELS;c++)
@@ -1091,11 +1090,7 @@ ALvoid aluMixData(ALCdevice *device, ALvoid *buffer, ALsizei size)
         size -= SamplesToDo;
     }
 
-#if defined(HAVE_FESETROUND)
-    fesetround(fpuState);
-#elif defined(HAVE__CONTROLFP)
-    _controlfp(fpuState, _MCW_RC);
-#endif
+    RestoreFPUMode(fpuState);
 }
 
 

@@ -18,6 +18,7 @@ enum UserFmtType {
     UserFmtFloat  = AL_FLOAT,
     UserFmtDouble = AL_DOUBLE,
     UserFmtMulaw  = AL_MULAW,
+    UserFmtAlaw   = AL_ALAW,
     UserFmtIMA4   = AL_IMA4,
     UserFmtByte3  = AL_BYTE3,
     UserFmtUByte3 = AL_UNSIGNED_BYTE3,
@@ -71,13 +72,13 @@ typedef struct ALbuffer
     ALsizei  size;
 
     ALsizei          Frequency;
+    ALenum           Format;
     enum FmtChannels FmtChannels;
     enum FmtType     FmtType;
 
     enum UserFmtChannels OriginalChannels;
     enum UserFmtType     OriginalType;
-    ALsizei OriginalSize;
-    ALsizei OriginalAlign;
+    ALsizei              OriginalSize;
 
     ALsizei  LoopStart;
     ALsizei  LoopEnd;

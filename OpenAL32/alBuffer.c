@@ -40,9 +40,6 @@ static ALboolean IsValidChannels(ALenum channels);
 static ALboolean DecomposeUserFormat(ALenum format, enum UserFmtChannels *chans, enum UserFmtType *type);
 static ALboolean DecomposeFormat(ALenum format, enum FmtChannels *chans, enum FmtType *type);
 
-#define LookupBuffer(m, k) ((ALbuffer*)LookupUIntMapKey(&(m), (k)))
-#define RemoveBuffer(m, k) ((ALbuffer*)PopUIntMapValue(&(m), (k)))
-
 
 /*
  * Global Variables
@@ -113,8 +110,7 @@ static const ALshort muLawDecompressionTable[256] = {
 /* Values used when encoding a muLaw sample */
 static const int muLawBias = 0x84;
 static const int muLawClip = 32635;
-static const char muLawCompressTable[256] =
-{
+static const char muLawCompressTable[256] = {
      0,0,1,1,2,2,2,2,3,3,3,3,3,3,3,3,
      4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
      5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,
@@ -131,6 +127,57 @@ static const char muLawCompressTable[256] =
      7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
      7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
      7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7
+};
+
+
+/* A quick'n'dirty lookup table to decode an aLaw-encoded byte sample into a
+ * signed 16-bit sample */
+static const ALshort aLawDecompressionTable[256] = {
+     -5504, -5248, -6016, -5760, -4480, -4224, -4992, -4736,
+     -7552, -7296, -8064, -7808, -6528, -6272, -7040, -6784,
+     -2752, -2624, -3008, -2880, -2240, -2112, -2496, -2368,
+     -3776, -3648, -4032, -3904, -3264, -3136, -3520, -3392,
+    -22016,-20992,-24064,-23040,-17920,-16896,-19968,-18944,
+    -30208,-29184,-32256,-31232,-26112,-25088,-28160,-27136,
+    -11008,-10496,-12032,-11520, -8960, -8448, -9984, -9472,
+    -15104,-14592,-16128,-15616,-13056,-12544,-14080,-13568,
+      -344,  -328,  -376,  -360,  -280,  -264,  -312,  -296,
+      -472,  -456,  -504,  -488,  -408,  -392,  -440,  -424,
+       -88,   -72,  -120,  -104,   -24,    -8,   -56,   -40,
+      -216,  -200,  -248,  -232,  -152,  -136,  -184,  -168,
+     -1376, -1312, -1504, -1440, -1120, -1056, -1248, -1184,
+     -1888, -1824, -2016, -1952, -1632, -1568, -1760, -1696,
+      -688,  -656,  -752,  -720,  -560,  -528,  -624,  -592,
+      -944,  -912, -1008,  -976,  -816,  -784,  -880,  -848,
+      5504,  5248,  6016,  5760,  4480,  4224,  4992,  4736,
+      7552,  7296,  8064,  7808,  6528,  6272,  7040,  6784,
+      2752,  2624,  3008,  2880,  2240,  2112,  2496,  2368,
+      3776,  3648,  4032,  3904,  3264,  3136,  3520,  3392,
+     22016, 20992, 24064, 23040, 17920, 16896, 19968, 18944,
+     30208, 29184, 32256, 31232, 26112, 25088, 28160, 27136,
+     11008, 10496, 12032, 11520,  8960,  8448,  9984,  9472,
+     15104, 14592, 16128, 15616, 13056, 12544, 14080, 13568,
+       344,   328,   376,   360,   280,   264,   312,   296,
+       472,   456,   504,   488,   408,   392,   440,   424,
+        88,    72,   120,   104,    24,     8,    56,    40,
+       216,   200,   248,   232,   152,   136,   184,   168,
+      1376,  1312,  1504,  1440,  1120,  1056,  1248,  1184,
+      1888,  1824,  2016,  1952,  1632,  1568,  1760,  1696,
+       688,   656,   752,   720,   560,   528,   624,   592,
+       944,   912,  1008,   976,   816,   784,   880,   848
+};
+
+/* Values used when encoding an aLaw sample */
+static const int aLawClip = 32635;
+static const char aLawCompressTable[128] = {
+    1,1,2,2,3,3,3,3,4,4,4,4,4,4,4,4,
+    5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,
+    6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+    6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+    7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+    7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+    7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+    7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7
 };
 
 
@@ -217,7 +264,7 @@ AL_API ALvoid AL_APIENTRY alDeleteBuffers(ALsizei n, const ALuint *buffers)
                 continue;
 
             /* Check for valid Buffer ID */
-            if((ALBuf=LookupBuffer(device->BufferMap, buffers[i])) == NULL)
+            if((ALBuf=LookupBuffer(device, buffers[i])) == NULL)
             {
                 alSetError(Context, AL_INVALID_NAME);
                 n = 0;
@@ -234,7 +281,7 @@ AL_API ALvoid AL_APIENTRY alDeleteBuffers(ALsizei n, const ALuint *buffers)
 
         for(i = 0;i < n;i++)
         {
-            if((ALBuf=RemoveBuffer(device->BufferMap, buffers[i])) == NULL)
+            if((ALBuf=RemoveBuffer(device, buffers[i])) == NULL)
                 continue;
             FreeThunkEntry(ALBuf->buffer);
 
@@ -263,7 +310,7 @@ AL_API ALboolean AL_APIENTRY alIsBuffer(ALuint buffer)
     Context = GetContextRef();
     if(!Context) return AL_FALSE;
 
-    result = ((!buffer || LookupBuffer(Context->Device->BufferMap, buffer)) ?
+    result = ((!buffer || LookupBuffer(Context->Device, buffer)) ?
               AL_TRUE : AL_FALSE);
 
     ALCcontext_DecRef(Context);
@@ -290,7 +337,7 @@ AL_API ALvoid AL_APIENTRY alBufferData(ALuint buffer,ALenum format,const ALvoid 
     if(!Context) return;
 
     device = Context->Device;
-    if((ALBuf=LookupBuffer(device->BufferMap, buffer)) == NULL)
+    if((ALBuf=LookupBuffer(device, buffer)) == NULL)
         alSetError(Context, AL_INVALID_NAME);
     else if(size < 0 || freq < 0)
         alSetError(Context, AL_INVALID_VALUE);
@@ -340,6 +387,7 @@ AL_API ALvoid AL_APIENTRY alBufferData(ALuint buffer,ALenum format,const ALvoid 
         }   break;
 
         case UserFmtMulaw:
+        case UserFmtAlaw:
         case UserFmtIMA4: {
             /* Here is where things vary:
              * nVidia and Apple use 64+1 sample frames per block -> block_size=36 bytes per channel
@@ -390,7 +438,7 @@ AL_API ALvoid AL_APIENTRY alBufferSubDataSOFT(ALuint buffer,ALenum format,const 
     if(!Context) return;
 
     device = Context->Device;
-    if((ALBuf=LookupBuffer(device->BufferMap, buffer)) == NULL)
+    if((ALBuf=LookupBuffer(device, buffer)) == NULL)
         alSetError(Context, AL_INVALID_NAME);
     else if(length < 0 || offset < 0 || (length > 0 && data == NULL))
         alSetError(Context, AL_INVALID_VALUE);
@@ -398,13 +446,21 @@ AL_API ALvoid AL_APIENTRY alBufferSubDataSOFT(ALuint buffer,ALenum format,const 
         alSetError(Context, AL_INVALID_ENUM);
     else
     {
+        ALuint original_align;
+
         WriteLock(&ALBuf->lock);
+
+        original_align = ((ALBuf->OriginalType == UserFmtIMA4) ?
+                          (ChannelsFromUserFmt(ALBuf->OriginalChannels)*36) :
+                          FrameSizeFromUserFmt(ALBuf->OriginalChannels,
+                                               ALBuf->OriginalType));
+
         if(SrcChannels != ALBuf->OriginalChannels || SrcType != ALBuf->OriginalType)
             alSetError(Context, AL_INVALID_ENUM);
         else if(offset > ALBuf->OriginalSize ||
                 length > ALBuf->OriginalSize-offset ||
-                (offset%ALBuf->OriginalAlign) != 0 ||
-                (length%ALBuf->OriginalAlign) != 0)
+                (offset%original_align) != 0 ||
+                (length%original_align) != 0)
             alSetError(Context, AL_INVALID_VALUE);
         else
         {
@@ -416,7 +472,7 @@ AL_API ALvoid AL_APIENTRY alBufferSubDataSOFT(ALuint buffer,ALenum format,const 
                 offset /= 36;
                 offset *= 65;
                 offset *= Bytes;
-                length /= ALBuf->OriginalAlign;
+                length /= original_align;
             }
             else
             {
@@ -437,7 +493,7 @@ AL_API ALvoid AL_APIENTRY alBufferSubDataSOFT(ALuint buffer,ALenum format,const 
 
 
 AL_API void AL_APIENTRY alBufferSamplesSOFT(ALuint buffer,
-  ALuint samplerate, ALenum internalformat, ALsizei frames,
+  ALuint samplerate, ALenum internalformat, ALsizei samples,
   ALenum channels, ALenum type, const ALvoid *data)
 {
     ALCcontext *Context;
@@ -449,9 +505,9 @@ AL_API void AL_APIENTRY alBufferSamplesSOFT(ALuint buffer,
     if(!Context) return;
 
     device = Context->Device;
-    if((ALBuf=LookupBuffer(device->BufferMap, buffer)) == NULL)
+    if((ALBuf=LookupBuffer(device, buffer)) == NULL)
         alSetError(Context, AL_INVALID_NAME);
-    else if(frames < 0 || samplerate == 0)
+    else if(samples < 0 || samplerate == 0)
         alSetError(Context, AL_INVALID_VALUE);
     else if(IsValidType(type) == AL_FALSE || IsValidChannels(channels) == AL_FALSE)
         alSetError(Context, AL_INVALID_ENUM);
@@ -460,11 +516,11 @@ AL_API void AL_APIENTRY alBufferSamplesSOFT(ALuint buffer,
         err = AL_NO_ERROR;
         if(type == UserFmtIMA4)
         {
-            if((frames%65) == 0) frames /= 65;
+            if((samples%65) == 0) samples /= 65;
             else err = AL_INVALID_VALUE;
         }
         if(err == AL_NO_ERROR)
-            err = LoadData(ALBuf, samplerate, internalformat, frames,
+            err = LoadData(ALBuf, samplerate, internalformat, samples,
                            channels, type, data, AL_FALSE);
         if(err != AL_NO_ERROR)
             alSetError(Context, err);
@@ -474,7 +530,7 @@ AL_API void AL_APIENTRY alBufferSamplesSOFT(ALuint buffer,
 }
 
 AL_API void AL_APIENTRY alBufferSubSamplesSOFT(ALuint buffer,
-  ALsizei offset, ALsizei frames,
+  ALsizei offset, ALsizei samples,
   ALenum channels, ALenum type, const ALvoid *data)
 {
     ALCcontext *Context;
@@ -485,35 +541,35 @@ AL_API void AL_APIENTRY alBufferSubSamplesSOFT(ALuint buffer,
     if(!Context) return;
 
     device = Context->Device;
-    if((ALBuf=LookupBuffer(device->BufferMap, buffer)) == NULL)
+    if((ALBuf=LookupBuffer(device, buffer)) == NULL)
         alSetError(Context, AL_INVALID_NAME);
-    else if(frames < 0 || offset < 0 || (frames > 0 && data == NULL))
+    else if(samples < 0 || offset < 0 || (samples > 0 && data == NULL))
         alSetError(Context, AL_INVALID_VALUE);
     else if(IsValidType(type) == AL_FALSE)
         alSetError(Context, AL_INVALID_ENUM);
     else
     {
         ALuint FrameSize;
-        ALuint FrameCount;
+        ALsizei FrameCount;
 
         WriteLock(&ALBuf->lock);
         FrameSize = FrameSizeFromFmt(ALBuf->FmtChannels, ALBuf->FmtType);
         FrameCount = ALBuf->size / FrameSize;
         if(channels != (ALenum)ALBuf->FmtChannels)
             alSetError(Context, AL_INVALID_ENUM);
-        else if((ALuint)offset > FrameCount || (ALuint)frames > FrameCount-offset)
+        else if(offset > FrameCount || samples > FrameCount-offset)
             alSetError(Context, AL_INVALID_VALUE);
-        else if(type == UserFmtIMA4 && (frames%65) != 0)
+        else if(type == UserFmtIMA4 && (samples%65) != 0)
             alSetError(Context, AL_INVALID_VALUE);
         else
         {
             /* offset -> byte offset */
             offset *= FrameSize;
-            /* frames -> IMA4 block count */
-            if(type == UserFmtIMA4) frames /= 65;
+            /* samples -> IMA4 block count */
+            if(type == UserFmtIMA4) samples /= 65;
             ConvertData(&((ALubyte*)ALBuf->data)[offset], ALBuf->FmtType,
                         data, type,
-                        ChannelsFromFmt(ALBuf->FmtChannels), frames);
+                        ChannelsFromFmt(ALBuf->FmtChannels), samples);
         }
         WriteUnlock(&ALBuf->lock);
     }
@@ -522,7 +578,7 @@ AL_API void AL_APIENTRY alBufferSubSamplesSOFT(ALuint buffer,
 }
 
 AL_API void AL_APIENTRY alGetBufferSamplesSOFT(ALuint buffer,
-  ALsizei offset, ALsizei frames,
+  ALsizei offset, ALsizei samples,
   ALenum channels, ALenum type, ALvoid *data)
 {
     ALCcontext *Context;
@@ -533,35 +589,35 @@ AL_API void AL_APIENTRY alGetBufferSamplesSOFT(ALuint buffer,
     if(!Context) return;
 
     device = Context->Device;
-    if((ALBuf=LookupBuffer(device->BufferMap, buffer)) == NULL)
+    if((ALBuf=LookupBuffer(device, buffer)) == NULL)
         alSetError(Context, AL_INVALID_NAME);
-    else if(frames < 0 || offset < 0 || (frames > 0 && data == NULL))
+    else if(samples < 0 || offset < 0 || (samples > 0 && data == NULL))
         alSetError(Context, AL_INVALID_VALUE);
     else if(IsValidType(type) == AL_FALSE)
         alSetError(Context, AL_INVALID_ENUM);
     else
     {
         ALuint FrameSize;
-        ALuint FrameCount;
+        ALsizei FrameCount;
 
         ReadLock(&ALBuf->lock);
         FrameSize = FrameSizeFromFmt(ALBuf->FmtChannels, ALBuf->FmtType);
         FrameCount = ALBuf->size / FrameSize;
         if(channels != (ALenum)ALBuf->FmtChannels)
             alSetError(Context, AL_INVALID_ENUM);
-        else if((ALuint)offset > FrameCount || (ALuint)frames > FrameCount-offset)
+        else if(offset > FrameCount || samples > FrameCount-offset)
             alSetError(Context, AL_INVALID_VALUE);
-        else if(type == UserFmtIMA4 && (frames%65) != 0)
+        else if(type == UserFmtIMA4 && (samples%65) != 0)
             alSetError(Context, AL_INVALID_VALUE);
         else
         {
             /* offset -> byte offset */
             offset *= FrameSize;
-            /* frames -> IMA4 block count */
-            if(type == UserFmtIMA4) frames /= 65;
+            /* samples -> IMA4 block count */
+            if(type == UserFmtIMA4) samples /= 65;
             ConvertData(data, type,
                         &((ALubyte*)ALBuf->data)[offset], ALBuf->FmtType,
-                        ChannelsFromFmt(ALBuf->FmtChannels), frames);
+                        ChannelsFromFmt(ALBuf->FmtChannels), samples);
         }
         ReadUnlock(&ALBuf->lock);
     }
@@ -598,7 +654,7 @@ AL_API void AL_APIENTRY alBufferf(ALuint buffer, ALenum eParam, ALfloat flValue)
     if(!pContext) return;
 
     device = pContext->Device;
-    if(LookupBuffer(device->BufferMap, buffer) == NULL)
+    if(LookupBuffer(device, buffer) == NULL)
         alSetError(pContext, AL_INVALID_NAME);
     else
     {
@@ -627,7 +683,7 @@ AL_API void AL_APIENTRY alBuffer3f(ALuint buffer, ALenum eParam, ALfloat flValue
     if(!pContext) return;
 
     device = pContext->Device;
-    if(LookupBuffer(device->BufferMap, buffer) == NULL)
+    if(LookupBuffer(device, buffer) == NULL)
         alSetError(pContext, AL_INVALID_NAME);
     else
     {
@@ -654,7 +710,7 @@ AL_API void AL_APIENTRY alBufferfv(ALuint buffer, ALenum eParam, const ALfloat* 
     device = pContext->Device;
     if(!flValues)
         alSetError(pContext, AL_INVALID_VALUE);
-    else if(LookupBuffer(device->BufferMap, buffer) == NULL)
+    else if(LookupBuffer(device, buffer) == NULL)
         alSetError(pContext, AL_INVALID_NAME);
     else
     {
@@ -681,7 +737,7 @@ AL_API void AL_APIENTRY alBufferi(ALuint buffer, ALenum eParam, ALint lValue)
     if(!pContext) return;
 
     device = pContext->Device;
-    if(LookupBuffer(device->BufferMap, buffer) == NULL)
+    if(LookupBuffer(device, buffer) == NULL)
         alSetError(pContext, AL_INVALID_NAME);
     else
     {
@@ -710,7 +766,7 @@ AL_API void AL_APIENTRY alBuffer3i( ALuint buffer, ALenum eParam, ALint lValue1,
     if(!pContext) return;
 
     device = pContext->Device;
-    if(LookupBuffer(device->BufferMap, buffer) == NULL)
+    if(LookupBuffer(device, buffer) == NULL)
         alSetError(pContext, AL_INVALID_NAME);
     else
     {
@@ -738,7 +794,7 @@ AL_API void AL_APIENTRY alBufferiv(ALuint buffer, ALenum eParam, const ALint* pl
     device = pContext->Device;
     if(!plValues)
         alSetError(pContext, AL_INVALID_VALUE);
-    else if((ALBuf=LookupBuffer(device->BufferMap, buffer)) == NULL)
+    else if((ALBuf=LookupBuffer(device, buffer)) == NULL)
         alSetError(pContext, AL_INVALID_NAME);
     else
     {
@@ -780,6 +836,7 @@ AL_API ALvoid AL_APIENTRY alGetBufferf(ALuint buffer, ALenum eParam, ALfloat *pf
 {
     ALCcontext    *pContext;
     ALCdevice     *device;
+    ALbuffer      *pBuffer;
 
     pContext = GetContextRef();
     if(!pContext) return;
@@ -787,12 +844,23 @@ AL_API ALvoid AL_APIENTRY alGetBufferf(ALuint buffer, ALenum eParam, ALfloat *pf
     device = pContext->Device;
     if(!pflValue)
         alSetError(pContext, AL_INVALID_VALUE);
-    else if(LookupBuffer(device->BufferMap, buffer) == NULL)
+    else if((pBuffer=LookupBuffer(device, buffer)) == NULL)
         alSetError(pContext, AL_INVALID_NAME);
     else
     {
         switch(eParam)
         {
+        case AL_SEC_LENGTH:
+            ReadLock(&pBuffer->lock);
+            if(pBuffer->size != 0)
+                *pflValue = (pBuffer->size /
+                             FrameSizeFromFmt(pBuffer->FmtChannels, pBuffer->FmtType)) /
+                            (ALfloat)pBuffer->Frequency;
+            else
+                *pflValue = 0.0f;
+            ReadUnlock(&pBuffer->lock);
+            break;
+
         default:
             alSetError(pContext, AL_INVALID_ENUM);
             break;
@@ -814,7 +882,7 @@ AL_API void AL_APIENTRY alGetBuffer3f(ALuint buffer, ALenum eParam, ALfloat* pfl
     device = pContext->Device;
     if(!pflValue1 || !pflValue2 || !pflValue3)
         alSetError(pContext, AL_INVALID_VALUE);
-    else if(LookupBuffer(device->BufferMap, buffer) == NULL)
+    else if(LookupBuffer(device, buffer) == NULL)
         alSetError(pContext, AL_INVALID_NAME);
     else
     {
@@ -835,13 +903,20 @@ AL_API void AL_APIENTRY alGetBufferfv(ALuint buffer, ALenum eParam, ALfloat* pfl
     ALCcontext    *pContext;
     ALCdevice     *device;
 
+    switch(eParam)
+    {
+    case AL_SEC_LENGTH:
+        alGetBufferf(buffer, eParam, pflValues);
+        return;
+    }
+
     pContext = GetContextRef();
     if(!pContext) return;
 
     device = pContext->Device;
     if(!pflValues)
         alSetError(pContext, AL_INVALID_VALUE);
-    else if(LookupBuffer(device->BufferMap, buffer) == NULL)
+    else if(LookupBuffer(device, buffer) == NULL)
         alSetError(pContext, AL_INVALID_NAME);
     else
     {
@@ -869,7 +944,7 @@ AL_API ALvoid AL_APIENTRY alGetBufferi(ALuint buffer, ALenum eParam, ALint *plVa
     device = pContext->Device;
     if(!plValue)
         alSetError(pContext, AL_INVALID_VALUE);
-    else if((pBuffer=LookupBuffer(device->BufferMap, buffer)) == NULL)
+    else if((pBuffer=LookupBuffer(device, buffer)) == NULL)
         alSetError(pContext, AL_INVALID_NAME);
     else
     {
@@ -889,6 +964,24 @@ AL_API ALvoid AL_APIENTRY alGetBufferi(ALuint buffer, ALenum eParam, ALint *plVa
 
         case AL_SIZE:
             *plValue = pBuffer->size;
+            break;
+
+        case AL_INTERNAL_FORMAT:
+            *plValue = pBuffer->Format;
+            break;
+
+        case AL_BYTE_LENGTH:
+            *plValue = pBuffer->OriginalSize;
+            break;
+
+        case AL_SAMPLE_LENGTH:
+            ReadLock(&pBuffer->lock);
+            if(pBuffer->size != 0)
+                *plValue = pBuffer->size /
+                           FrameSizeFromFmt(pBuffer->FmtChannels, pBuffer->FmtType);
+            else
+                *plValue = 0;
+            ReadUnlock(&pBuffer->lock);
             break;
 
         default:
@@ -912,7 +1005,7 @@ AL_API void AL_APIENTRY alGetBuffer3i(ALuint buffer, ALenum eParam, ALint* plVal
     device = pContext->Device;
     if(!plValue1 || !plValue2 || !plValue3)
         alSetError(pContext, AL_INVALID_VALUE);
-    else if(LookupBuffer(device->BufferMap, buffer) == NULL)
+    else if(LookupBuffer(device, buffer) == NULL)
         alSetError(pContext, AL_INVALID_NAME);
     else
     {
@@ -940,6 +1033,9 @@ AL_API void AL_APIENTRY alGetBufferiv(ALuint buffer, ALenum eParam, ALint* plVal
     case AL_BITS:
     case AL_CHANNELS:
     case AL_SIZE:
+    case AL_INTERNAL_FORMAT:
+    case AL_BYTE_LENGTH:
+    case AL_SAMPLE_LENGTH:
         alGetBufferi(buffer, eParam, plValues);
         return;
     }
@@ -950,7 +1046,7 @@ AL_API void AL_APIENTRY alGetBufferiv(ALuint buffer, ALenum eParam, ALint* plVal
     device = pContext->Device;
     if(!plValues)
         alSetError(pContext, AL_INVALID_VALUE);
-    else if((ALBuf=LookupBuffer(device->BufferMap, buffer)) == NULL)
+    else if((ALBuf=LookupBuffer(device, buffer)) == NULL)
         alSetError(pContext, AL_INVALID_NAME);
     else
     {
@@ -974,6 +1070,7 @@ AL_API void AL_APIENTRY alGetBufferiv(ALuint buffer, ALenum eParam, ALint* plVal
 
 
 typedef ALubyte ALmulaw;
+typedef ALubyte ALalaw;
 typedef ALubyte ALima4;
 typedef struct {
     ALbyte b[3];
@@ -1005,6 +1102,35 @@ static ALmulaw EncodeMuLaw(ALshort val)
     mant = (val >> (exp+3)) & 0x0f;
 
     return ~(sign | (exp<<4) | mant);
+}
+
+static __inline ALshort DecodeALaw(ALalaw val)
+{ return aLawDecompressionTable[val]; }
+
+static ALalaw EncodeALaw(ALshort val)
+{
+    ALint mant, exp, sign;
+
+    sign = ((~val) >> 8) & 0x80;
+    if(!sign)
+    {
+        val = maxi(val, -32767);
+        val = -val;
+    }
+    val = mini(val, aLawClip);
+
+    if(val >= 256)
+    {
+        exp = aLawCompressTable[(val>>8) & 0x7f];
+        mant = (val >> (exp+3)) & 0x0f;
+    }
+    else
+    {
+        exp = 0;
+        mant = val >> 4;
+    }
+
+    return ((exp<<4) | mant) ^ (sign^0x55);
 }
 
 static void DecodeIMA4Block(ALshort *dst, const ALima4 *src, ALint numchans)
@@ -1199,6 +1325,8 @@ static __inline ALbyte Conv_ALbyte_ALdouble(ALdouble val)
 }
 static __inline ALbyte Conv_ALbyte_ALmulaw(ALmulaw val)
 { return Conv_ALbyte_ALshort(DecodeMuLaw(val)); }
+static __inline ALbyte Conv_ALbyte_ALalaw(ALalaw val)
+{ return Conv_ALbyte_ALshort(DecodeALaw(val)); }
 static __inline ALbyte Conv_ALbyte_ALbyte3(ALbyte3 val)
 { return DecodeByte3(val)>>16; }
 static __inline ALbyte Conv_ALbyte_ALubyte3(ALubyte3 val)
@@ -1230,6 +1358,8 @@ static __inline ALubyte Conv_ALubyte_ALdouble(ALdouble val)
 }
 static __inline ALubyte Conv_ALubyte_ALmulaw(ALmulaw val)
 { return Conv_ALubyte_ALshort(DecodeMuLaw(val)); }
+static __inline ALubyte Conv_ALubyte_ALalaw(ALalaw val)
+{ return Conv_ALubyte_ALshort(DecodeALaw(val)); }
 static __inline ALubyte Conv_ALubyte_ALbyte3(ALbyte3 val)
 { return (DecodeByte3(val)>>16)+128; }
 static __inline ALubyte Conv_ALubyte_ALubyte3(ALubyte3 val)
@@ -1261,6 +1391,8 @@ static __inline ALshort Conv_ALshort_ALdouble(ALdouble val)
 }
 static __inline ALshort Conv_ALshort_ALmulaw(ALmulaw val)
 { return Conv_ALshort_ALshort(DecodeMuLaw(val)); }
+static __inline ALshort Conv_ALshort_ALalaw(ALalaw val)
+{ return Conv_ALshort_ALshort(DecodeALaw(val)); }
 static __inline ALshort Conv_ALshort_ALbyte3(ALbyte3 val)
 { return DecodeByte3(val)>>8; }
 static __inline ALshort Conv_ALshort_ALubyte3(ALubyte3 val)
@@ -1292,6 +1424,8 @@ static __inline ALushort Conv_ALushort_ALdouble(ALdouble val)
 }
 static __inline ALushort Conv_ALushort_ALmulaw(ALmulaw val)
 { return Conv_ALushort_ALshort(DecodeMuLaw(val)); }
+static __inline ALushort Conv_ALushort_ALalaw(ALalaw val)
+{ return Conv_ALushort_ALshort(DecodeALaw(val)); }
 static __inline ALushort Conv_ALushort_ALbyte3(ALbyte3 val)
 { return (DecodeByte3(val)>>8)+32768; }
 static __inline ALushort Conv_ALushort_ALubyte3(ALubyte3 val)
@@ -1323,6 +1457,8 @@ static __inline ALint Conv_ALint_ALdouble(ALdouble val)
 }
 static __inline ALint Conv_ALint_ALmulaw(ALmulaw val)
 { return Conv_ALint_ALshort(DecodeMuLaw(val)); }
+static __inline ALint Conv_ALint_ALalaw(ALalaw val)
+{ return Conv_ALint_ALshort(DecodeALaw(val)); }
 static __inline ALint Conv_ALint_ALbyte3(ALbyte3 val)
 { return DecodeByte3(val)<<8; }
 static __inline ALint Conv_ALint_ALubyte3(ALubyte3 val)
@@ -1354,6 +1490,8 @@ static __inline ALuint Conv_ALuint_ALdouble(ALdouble val)
 }
 static __inline ALuint Conv_ALuint_ALmulaw(ALmulaw val)
 { return Conv_ALuint_ALshort(DecodeMuLaw(val)); }
+static __inline ALuint Conv_ALuint_ALalaw(ALalaw val)
+{ return Conv_ALuint_ALshort(DecodeALaw(val)); }
 static __inline ALuint Conv_ALuint_ALbyte3(ALbyte3 val)
 { return (DecodeByte3(val)+8388608)<<8; }
 static __inline ALuint Conv_ALuint_ALubyte3(ALubyte3 val)
@@ -1368,19 +1506,21 @@ static __inline ALfloat Conv_ALfloat_ALshort(ALshort val)
 static __inline ALfloat Conv_ALfloat_ALushort(ALushort val)
 { return (val-32768) * (1.0f/32767.0f); }
 static __inline ALfloat Conv_ALfloat_ALint(ALint val)
-{ return val * (1.0/2147483647.0); }
+{ return (ALfloat)(val * (1.0/2147483647.0)); }
 static __inline ALfloat Conv_ALfloat_ALuint(ALuint val)
-{ return (ALint)(val-2147483648u) * (1.0/2147483647.0); }
+{ return (ALfloat)((ALint)(val-2147483648u) * (1.0/2147483647.0)); }
 static __inline ALfloat Conv_ALfloat_ALfloat(ALfloat val)
 { return (val==val) ? val : 0.0f; }
 static __inline ALfloat Conv_ALfloat_ALdouble(ALdouble val)
-{ return (val==val) ? val : 0.0; }
+{ return (val==val) ? (ALfloat)val : 0.0f; }
 static __inline ALfloat Conv_ALfloat_ALmulaw(ALmulaw val)
 { return Conv_ALfloat_ALshort(DecodeMuLaw(val)); }
+static __inline ALfloat Conv_ALfloat_ALalaw(ALalaw val)
+{ return Conv_ALfloat_ALshort(DecodeALaw(val)); }
 static __inline ALfloat Conv_ALfloat_ALbyte3(ALbyte3 val)
-{ return DecodeByte3(val) * (1.0/8388607.0); }
+{ return (ALfloat)(DecodeByte3(val) * (1.0/8388607.0)); }
 static __inline ALfloat Conv_ALfloat_ALubyte3(ALubyte3 val)
-{ return (DecodeUByte3(val)-8388608) * (1.0/8388607.0); }
+{ return (ALfloat)((DecodeUByte3(val)-8388608) * (1.0/8388607.0)); }
 
 static __inline ALdouble Conv_ALdouble_ALbyte(ALbyte val)
 { return val * (1.0/127.0); }
@@ -1400,6 +1540,8 @@ static __inline ALdouble Conv_ALdouble_ALdouble(ALdouble val)
 { return (val==val) ? val : 0.0; }
 static __inline ALdouble Conv_ALdouble_ALmulaw(ALmulaw val)
 { return Conv_ALdouble_ALshort(DecodeMuLaw(val)); }
+static __inline ALdouble Conv_ALdouble_ALalaw(ALalaw val)
+{ return Conv_ALdouble_ALshort(DecodeALaw(val)); }
 static __inline ALdouble Conv_ALdouble_ALbyte3(ALbyte3 val)
 { return DecodeByte3(val) * (1.0/8388607.0); }
 static __inline ALdouble Conv_ALdouble_ALubyte3(ALubyte3 val)
@@ -1419,6 +1561,27 @@ DECL_TEMPLATE(ALfloat)
 DECL_TEMPLATE(ALdouble)
 static __inline ALmulaw Conv_ALmulaw_ALmulaw(ALmulaw val)
 { return val; }
+DECL_TEMPLATE(ALalaw)
+DECL_TEMPLATE(ALbyte3)
+DECL_TEMPLATE(ALubyte3)
+
+#undef DECL_TEMPLATE
+
+#define DECL_TEMPLATE(T)                                                      \
+static __inline ALalaw Conv_ALalaw_##T(T val)                                 \
+{ return EncodeALaw(Conv_ALshort_##T(val)); }
+
+DECL_TEMPLATE(ALbyte)
+DECL_TEMPLATE(ALubyte)
+DECL_TEMPLATE(ALshort)
+DECL_TEMPLATE(ALushort)
+DECL_TEMPLATE(ALint)
+DECL_TEMPLATE(ALuint)
+DECL_TEMPLATE(ALfloat)
+DECL_TEMPLATE(ALdouble)
+DECL_TEMPLATE(ALmulaw)
+static __inline ALalaw Conv_ALalaw_ALalaw(ALalaw val)
+{ return val; }
 DECL_TEMPLATE(ALbyte3)
 DECL_TEMPLATE(ALubyte3)
 
@@ -1437,6 +1600,7 @@ DECL_TEMPLATE(ALuint)
 DECL_TEMPLATE(ALfloat)
 DECL_TEMPLATE(ALdouble)
 DECL_TEMPLATE(ALmulaw)
+DECL_TEMPLATE(ALalaw)
 static __inline ALbyte3 Conv_ALbyte3_ALbyte3(ALbyte3 val)
 { return val; }
 DECL_TEMPLATE(ALubyte3)
@@ -1456,6 +1620,7 @@ DECL_TEMPLATE(ALuint)
 DECL_TEMPLATE(ALfloat)
 DECL_TEMPLATE(ALdouble)
 DECL_TEMPLATE(ALmulaw)
+DECL_TEMPLATE(ALalaw)
 DECL_TEMPLATE(ALbyte3)
 static __inline ALubyte3 Conv_ALubyte3_ALubyte3(ALubyte3 val)
 { return val; }
@@ -1484,6 +1649,7 @@ DECL_TEMPLATE(ALbyte, ALuint)
 DECL_TEMPLATE(ALbyte, ALfloat)
 DECL_TEMPLATE(ALbyte, ALdouble)
 DECL_TEMPLATE(ALbyte, ALmulaw)
+DECL_TEMPLATE(ALbyte, ALalaw)
 DECL_TEMPLATE(ALbyte, ALbyte3)
 DECL_TEMPLATE(ALbyte, ALubyte3)
 
@@ -1496,6 +1662,7 @@ DECL_TEMPLATE(ALubyte, ALuint)
 DECL_TEMPLATE(ALubyte, ALfloat)
 DECL_TEMPLATE(ALubyte, ALdouble)
 DECL_TEMPLATE(ALubyte, ALmulaw)
+DECL_TEMPLATE(ALubyte, ALalaw)
 DECL_TEMPLATE(ALubyte, ALbyte3)
 DECL_TEMPLATE(ALubyte, ALubyte3)
 
@@ -1508,6 +1675,7 @@ DECL_TEMPLATE(ALshort, ALuint)
 DECL_TEMPLATE(ALshort, ALfloat)
 DECL_TEMPLATE(ALshort, ALdouble)
 DECL_TEMPLATE(ALshort, ALmulaw)
+DECL_TEMPLATE(ALshort, ALalaw)
 DECL_TEMPLATE(ALshort, ALbyte3)
 DECL_TEMPLATE(ALshort, ALubyte3)
 
@@ -1520,6 +1688,7 @@ DECL_TEMPLATE(ALushort, ALuint)
 DECL_TEMPLATE(ALushort, ALfloat)
 DECL_TEMPLATE(ALushort, ALdouble)
 DECL_TEMPLATE(ALushort, ALmulaw)
+DECL_TEMPLATE(ALushort, ALalaw)
 DECL_TEMPLATE(ALushort, ALbyte3)
 DECL_TEMPLATE(ALushort, ALubyte3)
 
@@ -1532,6 +1701,7 @@ DECL_TEMPLATE(ALint, ALuint)
 DECL_TEMPLATE(ALint, ALfloat)
 DECL_TEMPLATE(ALint, ALdouble)
 DECL_TEMPLATE(ALint, ALmulaw)
+DECL_TEMPLATE(ALint, ALalaw)
 DECL_TEMPLATE(ALint, ALbyte3)
 DECL_TEMPLATE(ALint, ALubyte3)
 
@@ -1544,6 +1714,7 @@ DECL_TEMPLATE(ALuint, ALuint)
 DECL_TEMPLATE(ALuint, ALfloat)
 DECL_TEMPLATE(ALuint, ALdouble)
 DECL_TEMPLATE(ALuint, ALmulaw)
+DECL_TEMPLATE(ALuint, ALalaw)
 DECL_TEMPLATE(ALuint, ALbyte3)
 DECL_TEMPLATE(ALuint, ALubyte3)
 
@@ -1556,6 +1727,7 @@ DECL_TEMPLATE(ALfloat, ALuint)
 DECL_TEMPLATE(ALfloat, ALfloat)
 DECL_TEMPLATE(ALfloat, ALdouble)
 DECL_TEMPLATE(ALfloat, ALmulaw)
+DECL_TEMPLATE(ALfloat, ALalaw)
 DECL_TEMPLATE(ALfloat, ALbyte3)
 DECL_TEMPLATE(ALfloat, ALubyte3)
 
@@ -1568,6 +1740,7 @@ DECL_TEMPLATE(ALdouble, ALuint)
 DECL_TEMPLATE(ALdouble, ALfloat)
 DECL_TEMPLATE(ALdouble, ALdouble)
 DECL_TEMPLATE(ALdouble, ALmulaw)
+DECL_TEMPLATE(ALdouble, ALalaw)
 DECL_TEMPLATE(ALdouble, ALbyte3)
 DECL_TEMPLATE(ALdouble, ALubyte3)
 
@@ -1580,8 +1753,22 @@ DECL_TEMPLATE(ALmulaw, ALuint)
 DECL_TEMPLATE(ALmulaw, ALfloat)
 DECL_TEMPLATE(ALmulaw, ALdouble)
 DECL_TEMPLATE(ALmulaw, ALmulaw)
+DECL_TEMPLATE(ALmulaw, ALalaw)
 DECL_TEMPLATE(ALmulaw, ALbyte3)
 DECL_TEMPLATE(ALmulaw, ALubyte3)
+
+DECL_TEMPLATE(ALalaw, ALbyte)
+DECL_TEMPLATE(ALalaw, ALubyte)
+DECL_TEMPLATE(ALalaw, ALshort)
+DECL_TEMPLATE(ALalaw, ALushort)
+DECL_TEMPLATE(ALalaw, ALint)
+DECL_TEMPLATE(ALalaw, ALuint)
+DECL_TEMPLATE(ALalaw, ALfloat)
+DECL_TEMPLATE(ALalaw, ALdouble)
+DECL_TEMPLATE(ALalaw, ALmulaw)
+DECL_TEMPLATE(ALalaw, ALalaw)
+DECL_TEMPLATE(ALalaw, ALbyte3)
+DECL_TEMPLATE(ALalaw, ALubyte3)
 
 DECL_TEMPLATE(ALbyte3, ALbyte)
 DECL_TEMPLATE(ALbyte3, ALubyte)
@@ -1592,6 +1779,7 @@ DECL_TEMPLATE(ALbyte3, ALuint)
 DECL_TEMPLATE(ALbyte3, ALfloat)
 DECL_TEMPLATE(ALbyte3, ALdouble)
 DECL_TEMPLATE(ALbyte3, ALmulaw)
+DECL_TEMPLATE(ALbyte3, ALalaw)
 DECL_TEMPLATE(ALbyte3, ALbyte3)
 DECL_TEMPLATE(ALbyte3, ALubyte3)
 
@@ -1604,6 +1792,7 @@ DECL_TEMPLATE(ALubyte3, ALuint)
 DECL_TEMPLATE(ALubyte3, ALfloat)
 DECL_TEMPLATE(ALubyte3, ALdouble)
 DECL_TEMPLATE(ALubyte3, ALmulaw)
+DECL_TEMPLATE(ALubyte3, ALalaw)
 DECL_TEMPLATE(ALubyte3, ALbyte3)
 DECL_TEMPLATE(ALubyte3, ALubyte3)
 
@@ -1633,6 +1822,7 @@ DECL_TEMPLATE(ALuint)
 DECL_TEMPLATE(ALfloat)
 DECL_TEMPLATE(ALdouble)
 DECL_TEMPLATE(ALmulaw)
+DECL_TEMPLATE(ALalaw)
 DECL_TEMPLATE(ALbyte3)
 DECL_TEMPLATE(ALubyte3)
 
@@ -1664,6 +1854,7 @@ DECL_TEMPLATE(ALuint)
 DECL_TEMPLATE(ALfloat)
 DECL_TEMPLATE(ALdouble)
 DECL_TEMPLATE(ALmulaw)
+DECL_TEMPLATE(ALalaw)
 static void Convert_ALima4_ALima4(ALima4 *dst, const ALima4 *src,
                                   ALuint numchans, ALuint numblocks)
 { memcpy(dst, src, numblocks*36*numchans); }
@@ -1705,6 +1896,9 @@ static void Convert_##T(T *dst, const ALvoid *src, enum UserFmtType srcType,  \
         case UserFmtMulaw:                                                    \
             Convert_##T##_ALmulaw(dst, src, numchans, len);                   \
             break;                                                            \
+        case UserFmtAlaw:                                                     \
+            Convert_##T##_ALalaw(dst, src, numchans, len);                    \
+            break;                                                            \
         case UserFmtIMA4:                                                     \
             Convert_##T##_ALima4(dst, src, numchans, len);                    \
             break;                                                            \
@@ -1726,6 +1920,7 @@ DECL_TEMPLATE(ALuint)
 DECL_TEMPLATE(ALfloat)
 DECL_TEMPLATE(ALdouble)
 DECL_TEMPLATE(ALmulaw)
+DECL_TEMPLATE(ALalaw)
 DECL_TEMPLATE(ALima4)
 DECL_TEMPLATE(ALbyte3)
 DECL_TEMPLATE(ALubyte3)
@@ -1763,6 +1958,9 @@ static void ConvertData(ALvoid *dst, enum UserFmtType dstType, const ALvoid *src
             break;
         case UserFmtMulaw:
             Convert_ALmulaw(dst, src, srcType, numchans, len);
+            break;
+        case UserFmtAlaw:
+            Convert_ALalaw(dst, src, srcType, numchans, len);
             break;
         case UserFmtIMA4:
             Convert_ALima4(dst, src, srcType, numchans, len);
@@ -1823,14 +2021,14 @@ static ALenum LoadData(ALbuffer *ALBuf, ALuint freq, ALenum NewFormat, ALsizei f
             return AL_OUT_OF_MEMORY;
         }
 
-        temp = realloc(ALBuf->data, newsize);
+        temp = realloc(ALBuf->data, (size_t)newsize);
         if(!temp && newsize)
         {
             WriteUnlock(&ALBuf->lock);
             return AL_OUT_OF_MEMORY;
         }
         ALBuf->data = temp;
-        ALBuf->size = newsize;
+        ALBuf->size = (ALsizei)newsize;
 
         if(data != NULL)
             ConvertData(ALBuf->data, DstType, data, SrcType, NewChannels, frames);
@@ -1840,7 +2038,6 @@ static ALenum LoadData(ALbuffer *ALBuf, ALuint freq, ALenum NewFormat, ALsizei f
             ALBuf->OriginalChannels = SrcChannels;
             ALBuf->OriginalType     = SrcType;
             ALBuf->OriginalSize     = frames * 36 * OrigChannels;
-            ALBuf->OriginalAlign    = 36 * OrigChannels;
         }
     }
     else
@@ -1857,14 +2054,14 @@ static ALenum LoadData(ALbuffer *ALBuf, ALuint freq, ALenum NewFormat, ALsizei f
             return AL_OUT_OF_MEMORY;
         }
 
-        temp = realloc(ALBuf->data, newsize);
+        temp = realloc(ALBuf->data, (size_t)newsize);
         if(!temp && newsize)
         {
             WriteUnlock(&ALBuf->lock);
             return AL_OUT_OF_MEMORY;
         }
         ALBuf->data = temp;
-        ALBuf->size = newsize;
+        ALBuf->size = (ALsizei)newsize;
 
         if(data != NULL)
             ConvertData(ALBuf->data, DstType, data, SrcType, NewChannels, frames);
@@ -1874,7 +2071,6 @@ static ALenum LoadData(ALbuffer *ALBuf, ALuint freq, ALenum NewFormat, ALsizei f
             ALBuf->OriginalChannels = SrcChannels;
             ALBuf->OriginalType     = SrcType;
             ALBuf->OriginalSize     = frames * OrigBytes * OrigChannels;
-            ALBuf->OriginalAlign    = OrigBytes * OrigChannels;
         }
     }
 
@@ -1883,14 +2079,14 @@ static ALenum LoadData(ALbuffer *ALBuf, ALuint freq, ALenum NewFormat, ALsizei f
         ALBuf->OriginalChannels = DstChannels;
         ALBuf->OriginalType     = DstType;
         ALBuf->OriginalSize     = frames * NewBytes * NewChannels;
-        ALBuf->OriginalAlign    = NewBytes * NewChannels;
     }
     ALBuf->Frequency = freq;
     ALBuf->FmtChannels = DstChannels;
     ALBuf->FmtType = DstType;
+    ALBuf->Format = NewFormat;
 
     ALBuf->LoopStart = 0;
-    ALBuf->LoopEnd = newsize / NewChannels / NewBytes;
+    ALBuf->LoopEnd = (ALsizei)(newsize / NewChannels / NewBytes);
 
     WriteUnlock(&ALBuf->lock);
     return AL_NO_ERROR;
@@ -1912,6 +2108,7 @@ ALuint BytesFromUserFmt(enum UserFmtType type)
     case UserFmtByte3: return sizeof(ALbyte3);
     case UserFmtUByte3: return sizeof(ALubyte3);
     case UserFmtMulaw: return sizeof(ALubyte);
+    case UserFmtAlaw: return sizeof(ALubyte);
     case UserFmtIMA4: break; /* not handled here */
     }
     return 0;
@@ -1944,6 +2141,7 @@ static ALboolean DecomposeUserFormat(ALenum format, enum UserFmtChannels *chans,
         { AL_FORMAT_MONO_DOUBLE_EXT, UserFmtMono, UserFmtDouble },
         { AL_FORMAT_MONO_IMA4,       UserFmtMono, UserFmtIMA4   },
         { AL_FORMAT_MONO_MULAW,      UserFmtMono, UserFmtMulaw  },
+        { AL_FORMAT_MONO_ALAW_EXT,   UserFmtMono, UserFmtAlaw   },
 
         { AL_FORMAT_STEREO8,           UserFmtStereo, UserFmtUByte  },
         { AL_FORMAT_STEREO16,          UserFmtStereo, UserFmtShort  },
@@ -1951,6 +2149,7 @@ static ALboolean DecomposeUserFormat(ALenum format, enum UserFmtChannels *chans,
         { AL_FORMAT_STEREO_DOUBLE_EXT, UserFmtStereo, UserFmtDouble },
         { AL_FORMAT_STEREO_IMA4,       UserFmtStereo, UserFmtIMA4   },
         { AL_FORMAT_STEREO_MULAW,      UserFmtStereo, UserFmtMulaw  },
+        { AL_FORMAT_STEREO_ALAW_EXT,   UserFmtStereo, UserFmtAlaw   },
 
         { AL_FORMAT_REAR8,      UserFmtRear, UserFmtUByte },
         { AL_FORMAT_REAR16,     UserFmtRear, UserFmtShort },
@@ -2086,6 +2285,7 @@ static ALboolean IsValidType(ALenum type)
         case AL_FLOAT:
         case AL_DOUBLE:
         case AL_MULAW:
+        case AL_ALAW:
         case AL_IMA4:
         case AL_BYTE3:
         case AL_UNSIGNED_BYTE3:
