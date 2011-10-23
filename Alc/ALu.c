@@ -134,9 +134,9 @@ ALvoid CalcNonAttnSourceParams(ALsource *ALSource, const ALCcontext *ALContext)
     ALint i, c;
 
     /* Get device properties */
-    DevChans  = ALContext->Device->FmtChans;
-    NumSends  = ALContext->Device->NumAuxSends;
-    Frequency = ALContext->Device->Frequency;
+    DevChans  = Device->FmtChans;
+    NumSends  = Device->NumAuxSends;
+    Frequency = Device->Frequency;
 
     /* Get listener properties */
     ListenerGain = ALContext->Listener.Gain;
@@ -174,19 +174,16 @@ ALvoid CalcNonAttnSourceParams(ALsource *ALSource, const ALCcontext *ALContext)
             }
 
             Channels = ALBuffer->FmtChannels;
-
-            if(ALSource->VirtualChannels && (Device->Flags&DEVICE_USE_HRTF))
-                ALSource->Params.DoMix = SelectHrtfMixer(ALBuffer,
-                       (ALSource->Params.Step==FRACTIONONE) ? POINT_RESAMPLER :
-                                                              Resampler);
-            else
-                ALSource->Params.DoMix = SelectMixer(ALBuffer,
-                       (ALSource->Params.Step==FRACTIONONE) ? POINT_RESAMPLER :
-                                                              Resampler);
             break;
         }
         BufferListItem = BufferListItem->next;
     }
+    if(VirtualChannels && Device->Hrtf)
+        ALSource->Params.DoMix = SelectHrtfMixer((ALSource->Params.Step==FRACTIONONE) ?
+                                                 POINT_RESAMPLER : Resampler);
+    else
+        ALSource->Params.DoMix = SelectMixer((ALSource->Params.Step==FRACTIONONE) ?
+                                             POINT_RESAMPLER : Resampler);
 
     /* Calculate gains */
     DryGain  = clampf(SourceVolume, MinVolume, MaxVolume);
@@ -213,7 +210,7 @@ ALvoid CalcNonAttnSourceParams(ALsource *ALSource, const ALCcontext *ALContext)
         num_channels = 1;
         break;
     case FmtStereo:
-        if(VirtualChannels && (ALContext->Device->Flags&DEVICE_DUPLICATE_STEREO))
+        if(VirtualChannels && (Device->Flags&DEVICE_DUPLICATE_STEREO))
         {
             DryGain *= aluSqrt(2.0f/4.0f);
             for(c = 0;c < 2;c++)
@@ -271,7 +268,7 @@ ALvoid CalcNonAttnSourceParams(ALsource *ALSource, const ALCcontext *ALContext)
         for(c = 0;c < num_channels;c++)
             SrcMatrix[c][chans[c]] += DryGain * ListenerGain;
     }
-    else if((Device->Flags&DEVICE_USE_HRTF))
+    else if(Device->Hrtf)
     {
         for(c = 0;c < num_channels;c++)
         {
@@ -290,7 +287,7 @@ ALvoid CalcNonAttnSourceParams(ALsource *ALSource, const ALCcontext *ALContext)
             {
                 /* Get the static HRIR coefficients and delays for this
                  * channel. */
-                GetLerpedHrtfCoeffs(ALContext->Device->Hrtf,
+                GetLerpedHrtfCoeffs(Device->Hrtf,
                                     0.0f, F_PI/180.0f * angles[c],
                                     DryGain*ListenerGain,
                                     ALSource->Params.HrtfCoeffs[c],
@@ -688,20 +685,18 @@ ALvoid CalcSourceParams(ALsource *ALSource, const ALCcontext *ALContext)
                     ALSource->Params.Step = 1;
             }
 
-            if((Device->Flags&DEVICE_USE_HRTF))
-                ALSource->Params.DoMix = SelectHrtfMixer(ALBuffer,
-                       (ALSource->Params.Step==FRACTIONONE) ? POINT_RESAMPLER :
-                                                              Resampler);
-            else
-                ALSource->Params.DoMix = SelectMixer(ALBuffer,
-                       (ALSource->Params.Step==FRACTIONONE) ? POINT_RESAMPLER :
-                                                              Resampler);
             break;
         }
         BufferListItem = BufferListItem->next;
     }
+    if(Device->Hrtf)
+        ALSource->Params.DoMix = SelectHrtfMixer((ALSource->Params.Step==FRACTIONONE) ?
+                                                 POINT_RESAMPLER : Resampler);
+    else
+        ALSource->Params.DoMix = SelectMixer((ALSource->Params.Step==FRACTIONONE) ?
+                                             POINT_RESAMPLER : Resampler);
 
-    if((Device->Flags&DEVICE_USE_HRTF))
+    if(Device->Hrtf)
     {
         // Use a binaural HRTF algorithm for stereo headphone playback
         ALfloat delta, ev = 0.0f, az = 0.0f;

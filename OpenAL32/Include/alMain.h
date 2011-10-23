@@ -427,9 +427,8 @@ extern UIntMap TlsDestructor;
 void InitUIntMap(UIntMap *map, ALsizei limit);
 void ResetUIntMap(UIntMap *map);
 ALenum InsertUIntMapEntry(UIntMap *map, ALuint key, ALvoid *value);
-void RemoveUIntMapKey(UIntMap *map, ALuint key);
+ALvoid *RemoveUIntMapKey(UIntMap *map, ALuint key);
 ALvoid *LookupUIntMapKey(UIntMap *map, ALuint key);
-ALvoid *PopUIntMapValue(UIntMap *map, ALuint key);
 
 static __inline void LockUIntMapRead(UIntMap *map)
 { ReadLock(&map->lock); }
@@ -695,12 +694,10 @@ struct ALCdevice_struct
 
 // Duplicate stereo sources on the side/rear channels
 #define DEVICE_DUPLICATE_STEREO                  (1<<0)
-// Use HRTF filters for mixing sounds
-#define DEVICE_USE_HRTF                          (1<<1)
 // Frequency was requested by the app or config file
-#define DEVICE_FREQUENCY_REQUEST                 (1<<2)
+#define DEVICE_FREQUENCY_REQUEST                 (1<<1)
 // Channel configuration was requested by the config file
-#define DEVICE_CHANNELS_REQUEST                  (1<<3)
+#define DEVICE_CHANNELS_REQUEST                  (1<<2)
 
 // Specifies if the device is currently running
 #define DEVICE_RUNNING                           (1<<31)
@@ -708,9 +705,9 @@ struct ALCdevice_struct
 #define LookupBuffer(m, k) ((struct ALbuffer*)LookupUIntMapKey(&(m)->BufferMap, (k)))
 #define LookupEffect(m, k) ((struct ALeffect*)LookupUIntMapKey(&(m)->EffectMap, (k)))
 #define LookupFilter(m, k) ((struct ALfilter*)LookupUIntMapKey(&(m)->FilterMap, (k)))
-#define RemoveBuffer(m, k) ((struct ALbuffer*)PopUIntMapValue(&(m)->BufferMap, (k)))
-#define RemoveEffect(m, k) ((struct ALeffect*)PopUIntMapValue(&(m)->EffectMap, (k)))
-#define RemoveFilter(m, k) ((struct ALfilter*)PopUIntMapValue(&(m)->FilterMap, (k)))
+#define RemoveBuffer(m, k) ((struct ALbuffer*)RemoveUIntMapKey(&(m)->BufferMap, (k)))
+#define RemoveEffect(m, k) ((struct ALeffect*)RemoveUIntMapKey(&(m)->EffectMap, (k)))
+#define RemoveFilter(m, k) ((struct ALfilter*)RemoveUIntMapKey(&(m)->FilterMap, (k)))
 
 
 struct ALCcontext_struct
@@ -750,8 +747,8 @@ struct ALCcontext_struct
 
 #define LookupSource(m, k) ((struct ALsource*)LookupUIntMapKey(&(m)->SourceMap, (k)))
 #define LookupEffectSlot(m, k) ((struct ALeffectslot*)LookupUIntMapKey(&(m)->EffectSlotMap, (k)))
-#define RemoveSource(m, k) ((struct ALsource*)PopUIntMapValue(&(m)->SourceMap, (k)))
-#define RemoveEffectSlot(m, k) ((struct ALeffectslot*)PopUIntMapValue(&(m)->EffectSlotMap, (k)))
+#define RemoveSource(m, k) ((struct ALsource*)RemoveUIntMapKey(&(m)->SourceMap, (k)))
+#define RemoveEffectSlot(m, k) ((struct ALeffectslot*)RemoveUIntMapKey(&(m)->EffectSlotMap, (k)))
 
 ALCcontext *GetContextRef(void);
 

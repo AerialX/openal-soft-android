@@ -140,10 +140,10 @@ enum DistanceModel {
 #define FRACTIONONE  (1<<FRACTIONBITS)
 #define FRACTIONMASK (FRACTIONONE-1)
 
-/* Size for temporary stack storage of buffer data. Larger values need more
- * stack, while smaller values may need more iterations. The value needs to be
- * a sensible size, however, as it constrains the max stepping value used for
- * mixing.
+/* Size for temporary stack storage of buffer data. Must be a multiple of the
+ * size of ALfloat, ie, 4. Larger values need more stack, while smaller values
+ * may need more iterations. The value needs to be a sensible size, however, as
+ * it constrains the max stepping value used for mixing.
  * The mixer requires being able to do two samplings per mixing loop. A 16KB
  * buffer can hold 512 sample frames for a 7.1 float buffer. With the cubic
  * resampler (which requires 3 padding sample frames), this limits the maximum
@@ -174,6 +174,13 @@ static __inline ALint maxi(ALint a, ALint b)
 { return ((a > b) ? a : b); }
 static __inline ALint clampi(ALint val, ALint min, ALint max)
 { return mini(max, maxi(min, val)); }
+
+static __inline ALint64 mini64(ALint64 a, ALint64 b)
+{ return ((a > b) ? b : a); }
+static __inline ALint64 maxi64(ALint64 a, ALint64 b)
+{ return ((a > b) ? a : b); }
+static __inline ALint64 clampi64(ALint64 val, ALint64 min, ALint64 max)
+{ return mini64(max, maxi64(min, val)); }
 
 
 static __inline ALfloat lerp(ALfloat val1, ALfloat val2, ALfloat mu)
@@ -233,8 +240,8 @@ ALint aluCart2LUTpos(ALfloat re, ALfloat im);
 ALvoid CalcSourceParams(struct ALsource *ALSource, const ALCcontext *ALContext);
 ALvoid CalcNonAttnSourceParams(struct ALsource *ALSource, const ALCcontext *ALContext);
 
-MixerFunc SelectMixer(struct ALbuffer *Buffer, enum Resampler Resampler);
-MixerFunc SelectHrtfMixer(struct ALbuffer *Buffer, enum Resampler Resampler);
+MixerFunc SelectMixer(enum Resampler Resampler);
+MixerFunc SelectHrtfMixer(enum Resampler Resampler);
 
 ALvoid MixSource(struct ALsource *Source, ALCdevice *Device, ALuint SamplesToDo);
 
