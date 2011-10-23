@@ -40,7 +40,7 @@ static jmethodID mStop;
 static jmethodID mRelease;
 static jmethodID mWrite;
 
-jint JNI_OnLoad(JavaVM* vm, void* reserved)
+__attribute__((visibility("default"))) jint JNI_OnLoad(JavaVM* vm, void* reserved)
 {
 	(void)reserved;
     javaVM = vm;
