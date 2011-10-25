@@ -407,7 +407,7 @@ static pthread_once_t alc_config_once = PTHREAD_ONCE_INIT;
 
 ///////////////////////////////////////////////////////
 // ALC Related helper functions
-static void ReleaseALC(ALCboolean doclose);
+static void ReleaseALC(void);
 static void ReleaseThreadCtx(void *ptr);
 
 static void alc_initconfig(void);
@@ -523,7 +523,7 @@ static void alc_init(void)
 
 static void alc_deinit_safe(void)
 {
-    ReleaseALC(ALC_FALSE);
+    ReleaseALC();
 
     FreeHrtf();
     FreeALConfig();
@@ -541,7 +541,7 @@ static void alc_deinit(void)
 {
     int i;
 
-    ReleaseALC(ALC_TRUE);
+    ReleaseALC();
 
     memset(&PlaybackBackend, 0, sizeof(PlaybackBackend));
     memset(&CaptureBackend, 0, sizeof(CaptureBackend));
@@ -2652,8 +2652,10 @@ ALC_API void ALC_APIENTRY alcRenderSamplesSOFT(ALCdevice *device, ALCvoid *buffe
 }
 
 
-static void ReleaseALC(ALCboolean doclose)
+static void ReleaseALC(void)
 {
+    ALCdevice *dev;
+
     free(alcDeviceList); alcDeviceList = NULL;
     alcDeviceListSize = 0;
     free(alcAllDeviceList); alcAllDeviceList = NULL;
@@ -2668,27 +2670,13 @@ static void ReleaseALC(ALCboolean doclose)
     free(alcCaptureDefaultDeviceSpecifier);
     alcCaptureDefaultDeviceSpecifier = NULL;
 
-    if(doclose)
+    if((dev=ExchangePtr((void**)&DeviceList, NULL)) != NULL)
     {
-        ALCdevice *dev;
-        while((dev=DeviceList) != NULL)
-        {
-            WARN("Closing device %p\n", dev);
-            if(!dev->IsCaptureDevice) alcCloseDevice(dev);
-            else alcCaptureCloseDevice(dev);
-        }
-    }
-    else
-    {
-        ALCdevice *dev;
-        if((dev=DeviceList) != NULL)
-        {
-            ALCuint num = 0;
-            do {
-                num++;
-            } while((dev=dev->next) != NULL);
-            WARN("%u device%s not closed\n", num, (num>1)?"s":"");
-        }
+        ALCuint num = 0;
+        do {
+            num++;
+        } while((dev=dev->next) != NULL);
+        ERR("%u device%s not closed\n", num, (num>1)?"s":"");
     }
 }
 
