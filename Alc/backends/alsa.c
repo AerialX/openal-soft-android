@@ -64,11 +64,13 @@ MAKE_FUNC(snd_pcm_hw_params);
 MAKE_FUNC(snd_pcm_sw_params_malloc);
 MAKE_FUNC(snd_pcm_sw_params_current);
 MAKE_FUNC(snd_pcm_sw_params_set_avail_min);
+MAKE_FUNC(snd_pcm_sw_params_set_stop_threshold);
 MAKE_FUNC(snd_pcm_sw_params);
 MAKE_FUNC(snd_pcm_sw_params_free);
 MAKE_FUNC(snd_pcm_prepare);
 MAKE_FUNC(snd_pcm_start);
 MAKE_FUNC(snd_pcm_resume);
+MAKE_FUNC(snd_pcm_reset);
 MAKE_FUNC(snd_pcm_wait);
 MAKE_FUNC(snd_pcm_state);
 MAKE_FUNC(snd_pcm_avail_update);
@@ -126,11 +128,13 @@ MAKE_FUNC(snd_card_next);
 #define snd_pcm_sw_params_malloc psnd_pcm_sw_params_malloc
 #define snd_pcm_sw_params_current psnd_pcm_sw_params_current
 #define snd_pcm_sw_params_set_avail_min psnd_pcm_sw_params_set_avail_min
+#define snd_pcm_sw_params_set_stop_threshold psnd_pcm_sw_params_set_stop_threshold
 #define snd_pcm_sw_params psnd_pcm_sw_params
 #define snd_pcm_sw_params_free psnd_pcm_sw_params_free
 #define snd_pcm_prepare psnd_pcm_prepare
 #define snd_pcm_start psnd_pcm_start
 #define snd_pcm_resume psnd_pcm_resume
+#define snd_pcm_reset psnd_pcm_reset
 #define snd_pcm_wait psnd_pcm_wait
 #define snd_pcm_state psnd_pcm_state
 #define snd_pcm_avail_update psnd_pcm_avail_update
@@ -206,11 +210,13 @@ static ALCboolean alsa_load(void)
         LOAD_FUNC(snd_pcm_sw_params_malloc);
         LOAD_FUNC(snd_pcm_sw_params_current);
         LOAD_FUNC(snd_pcm_sw_params_set_avail_min);
+        LOAD_FUNC(snd_pcm_sw_params_set_stop_threshold);
         LOAD_FUNC(snd_pcm_sw_params);
         LOAD_FUNC(snd_pcm_sw_params_free);
         LOAD_FUNC(snd_pcm_prepare);
         LOAD_FUNC(snd_pcm_start);
         LOAD_FUNC(snd_pcm_resume);
+        LOAD_FUNC(snd_pcm_reset);
         LOAD_FUNC(snd_pcm_wait);
         LOAD_FUNC(snd_pcm_state);
         LOAD_FUNC(snd_pcm_avail_update);
@@ -394,6 +400,7 @@ static ALuint ALSAProc(ALvoid *ptr)
     ALCdevice *pDevice = (ALCdevice*)ptr;
     alsa_data *data = (alsa_data*)pDevice->ExtraData;
     const snd_pcm_channel_area_t *areas = NULL;
+    snd_pcm_uframes_t update_size, num_updates;
     snd_pcm_sframes_t avail, commitres;
     snd_pcm_uframes_t offset, frames;
     char *WritePtr;
@@ -401,6 +408,8 @@ static ALuint ALSAProc(ALvoid *ptr)
 
     SetRTPriority();
 
+    update_size = pDevice->UpdateSize;
+    num_updates = pDevice->NumUpdates;
     while(!data->killNow)
     {
         int state = verify_state(data->pcmHandle);
@@ -418,8 +427,15 @@ static ALuint ALSAProc(ALvoid *ptr)
             continue;
         }
 
+        if((snd_pcm_uframes_t)avail > update_size*(num_updates+1))
+        {
+            WARN("available samples exceeds the buffer size\n");
+            snd_pcm_reset(data->pcmHandle);
+            continue;
+        }
+
         // make sure there's frames to process
-        if((snd_pcm_uframes_t)avail < pDevice->UpdateSize)
+        if((snd_pcm_uframes_t)avail < update_size)
         {
             if(state != SND_PCM_STATE_RUNNING)
             {
@@ -434,7 +450,7 @@ static ALuint ALSAProc(ALvoid *ptr)
                 ERR("Wait timeout... buffer size too low?\n");
             continue;
         }
-        avail -= avail%pDevice->UpdateSize;
+        avail -= avail%update_size;
 
         // it is possible that contiguous areas are smaller, thus we use a loop
         while(avail > 0)
@@ -726,6 +742,8 @@ static ALCboolean alsa_reset_playback(ALCdevice *device)
         err = "sw current";
     if(i == 0 && (i=snd_pcm_sw_params_set_avail_min(data->pcmHandle, sp, periodSizeInFrames)) != 0)
         err = "sw set avail min";
+    if(i == 0 && (i=snd_pcm_sw_params_set_stop_threshold(data->pcmHandle, sp, periodSizeInFrames*periods)) != 0)
+        err = "sw set stop threshold";
     if(i == 0 && (i=snd_pcm_sw_params(data->pcmHandle, sp)) != 0)
         err = "sw set params";
     if(i != 0)
