@@ -52,9 +52,9 @@ static ALuint NullProc(ALvoid *ptr)
         avail = (ALuint64)(now-start) * Device->Frequency / 1000;
         if(avail < done)
         {
-            /* Timer wrapped. Add the remainder of the cycle to the available
-             * count and reset the number of samples done */
-            avail += (ALuint64)0xFFFFFFFFu*Device->Frequency/1000 - done;
+            /* Timer wrapped (50 days???). Add the remainder of the cycle to
+             * the available count and reset the number of samples done */
+            avail += ((ALuint64)1<<32)*Device->Frequency/1000 - done;
             done = 0;
         }
         if(avail-done < Device->UpdateSize)
@@ -99,9 +99,13 @@ static void null_close_playback(ALCdevice *device)
 
 static ALCboolean null_reset_playback(ALCdevice *device)
 {
-    null_data *data = (null_data*)device->ExtraData;
-
     SetDefaultWFXChannelOrder(device);
+    return ALC_TRUE;
+}
+
+static ALCboolean null_start_playback(ALCdevice *device)
+{
+    null_data *data = (null_data*)device->ExtraData;
 
     data->thread = StartThread(NullProc, device);
     if(data->thread == NULL)
@@ -129,6 +133,7 @@ static const BackendFuncs null_funcs = {
     null_open_playback,
     null_close_playback,
     null_reset_playback,
+    null_start_playback,
     null_stop_playback,
     NULL,
     NULL,
@@ -152,9 +157,6 @@ void alc_null_probe(enum DevProbe type)
 {
     switch(type)
     {
-        case DEVICE_PROBE:
-            AppendDeviceList(nullDevice);
-            break;
         case ALL_DEVICE_PROBE:
             AppendAllDeviceList(nullDevice);
             break;

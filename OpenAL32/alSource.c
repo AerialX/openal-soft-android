@@ -33,13 +33,13 @@
 #include "alAuxEffectSlot.h"
 
 
-enum Resampler DefaultResampler = RESAMPLER_DEFAULT;
-const ALsizei ResamplerPadding[RESAMPLER_MAX] = {
+enum Resampler DefaultResampler = LinearResampler;
+const ALsizei ResamplerPadding[ResamplerMax] = {
     0, /* Point */
     1, /* Linear */
     2, /* Cubic */
 };
-const ALsizei ResamplerPrePadding[RESAMPLER_MAX] = {
+const ALsizei ResamplerPrePadding[ResamplerMax] = {
     0, /* Point */
     0, /* Linear */
     1, /* Cubic */
@@ -54,12 +54,10 @@ static ALint GetSampleOffset(ALsource *Source);
 AL_API ALvoid AL_APIENTRY alGenSources(ALsizei n,ALuint *sources)
 {
     ALCcontext *Context;
-    ALCdevice *Device;
 
     Context = GetContextRef();
     if(!Context) return;
 
-    Device = Context->Device;
     if(n < 0 || IsBadWritePtr((void*)sources, n * sizeof(ALuint)))
         alSetError(Context, AL_INVALID_VALUE);
     else
@@ -583,7 +581,7 @@ AL_API ALvoid AL_APIENTRY alSourcei(ALuint source,ALenum eParam,ALint lValue)
                             // Increment reference counter for buffer
                             IncrementRef(&buffer->ref);
 
-                            oldlist = ExchangePtr((void**)&Source->queue, BufferListItem);
+                            oldlist = ExchangePtr((XchgPtr*)&Source->queue, BufferListItem);
                             Source->BuffersInQueue = 1;
 
                             ReadLock(&buffer->lock);
@@ -600,7 +598,7 @@ AL_API ALvoid AL_APIENTRY alSourcei(ALuint source,ALenum eParam,ALint lValue)
                         {
                             // Source is now in UNDETERMINED mode
                             Source->lSourceType = AL_UNDETERMINED;
-                            oldlist = ExchangePtr((void**)&Source->queue, NULL);
+                            oldlist = ExchangePtr((XchgPtr*)&Source->queue, NULL);
                         }
 
                         // Delete all previous elements in the queue
@@ -706,10 +704,10 @@ AL_API ALvoid AL_APIENTRY alSourcei(ALuint source,ALenum eParam,ALint lValue)
                     alSetError(pContext, AL_INVALID_VALUE);
                 break;
 
-            case AL_VIRTUAL_CHANNELS_SOFT:
+            case AL_DIRECT_CHANNELS_SOFT:
                 if(lValue == AL_TRUE || lValue == AL_FALSE)
                 {
-                    Source->VirtualChannels = lValue;
+                    Source->DirectChannels = lValue;
                     Source->NeedsUpdate = AL_TRUE;
                 }
                 else
@@ -780,7 +778,7 @@ AL_API void AL_APIENTRY alSource3i(ALuint source, ALenum eParam, ALint lValue1, 
                     /* Release refcount on the previous slot, and add one for
                      * the new slot */
                     if(ALEffectSlot) IncrementRef(&ALEffectSlot->ref);
-                    ALEffectSlot = ExchangePtr((void**)&Source->Send[lValue2].Slot, ALEffectSlot);
+                    ALEffectSlot = ExchangePtr((XchgPtr*)&Source->Send[lValue2].Slot, ALEffectSlot);
                     if(ALEffectSlot) DecrementRef(&ALEffectSlot->ref);
 
                     if(!ALFilter)
@@ -838,7 +836,7 @@ AL_API void AL_APIENTRY alSourceiv(ALuint source, ALenum eParam, const ALint* pl
             case AL_AUXILIARY_SEND_FILTER_GAIN_AUTO:
             case AL_AUXILIARY_SEND_FILTER_GAINHF_AUTO:
             case AL_DISTANCE_MODEL:
-            case AL_VIRTUAL_CHANNELS_SOFT:
+            case AL_DIRECT_CHANNELS_SOFT:
                 alSourcei(source, eParam, plValues[0]);
                 return;
 
@@ -1211,8 +1209,8 @@ AL_API ALvoid AL_APIENTRY alGetSourcei(ALuint source, ALenum eParam, ALint *plVa
                     *plValue = (ALint)Source->DopplerFactor;
                     break;
 
-                case AL_VIRTUAL_CHANNELS_SOFT:
-                    *plValue = Source->VirtualChannels;
+                case AL_DIRECT_CHANNELS_SOFT:
+                    *plValue = Source->DirectChannels;
                     break;
 
                 case AL_DISTANCE_MODEL:
@@ -1317,7 +1315,7 @@ AL_API void AL_APIENTRY alGetSourceiv(ALuint source, ALenum eParam, ALint* plVal
         case AL_AUXILIARY_SEND_FILTER_GAIN_AUTO:
         case AL_AUXILIARY_SEND_FILTER_GAINHF_AUTO:
         case AL_DISTANCE_MODEL:
-        case AL_VIRTUAL_CHANNELS_SOFT:
+        case AL_DIRECT_CHANNELS_SOFT:
             alGetSourcei(source, eParam, plValues);
             return;
 
@@ -1824,9 +1822,9 @@ static ALvoid InitSourceParams(ALsource *Source)
     Source->AirAbsorptionFactor = 0.0f;
     Source->RoomRolloffFactor = 0.0f;
     Source->DopplerFactor = 1.0f;
-    Source->VirtualChannels = AL_TRUE;
+    Source->DirectChannels = AL_FALSE;
 
-    Source->DistanceModel = AL_INVERSE_DISTANCE_CLAMPED;
+    Source->DistanceModel = DefaultDistanceModel;
 
     Source->Resampler = DefaultResampler;
 
@@ -1984,6 +1982,9 @@ static ALvoid GetSourceOffset(ALsource *Source, ALenum name, ALdouble *offset, A
         offset[1] = 0.0;
         return;
     }
+
+    if(updateLen > 0.0 && updateLen < 0.015)
+        updateLen = 0.015;
 
     // Get Current SamplesPlayed (NOTE : This is the offset into the *current* buffer)
     readPos = Source->position;

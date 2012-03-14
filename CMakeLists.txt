@@ -17,6 +17,7 @@ INCLUDE(CheckSymbolExists)
 INCLUDE(CheckCCompilerFlag)
 INCLUDE(CheckCSourceCompiles)
 INCLUDE(CheckTypeSize)
+INCLUDE(FindPkgConfig)
 
 
 PROJECT(OpenAL C)
@@ -59,12 +60,14 @@ OPTION(WERROR  "Treat compile warnings as errors"      OFF)
 
 OPTION(UTILS  "Build and install utility programs"  ON)
 
+OPTION(EXAMPLES  "Build and install example programs"  ON)
+
 OPTION(ALSOFT_CONFIG "Install alsoft.conf configuration file" OFF)
 
 
 IF(WIN32)
     SET(LIBNAME OpenAL32)
-    ADD_DEFINITIONS("-D_WIN32 -D_WIN32_WINNT=0x0500")
+    ADD_DEFINITIONS("-D_WIN32 -D_WIN32_WINNT=0x0501")
 ELSE()
     SET(LIBNAME openal)
 ENDIF()
@@ -332,7 +335,7 @@ IF(DLOPEN)
 ENDIF()
 
 # Check if we have Windows headers
-CHECK_INCLUDE_FILE(windows.h HAVE_WINDOWS_H -D_WIN32_WINNT=0x0500)
+CHECK_INCLUDE_FILE(windows.h HAVE_WINDOWS_H -D_WIN32_WINNT=0x0501)
 IF(NOT HAVE_WINDOWS_H)
     CHECK_FUNCTION_EXISTS(gettimeofday HAVE_GETTIMEOFDAY)
     IF(NOT HAVE_GETTIMEOFDAY)
@@ -378,7 +381,7 @@ ENDIF()
 CHECK_INCLUDE_FILE(stdint.h HAVE_STDINT_H)
 IF(NOT HAVE_STDINT_H)
     IF(HAVE_WINDOWS_H)
-        CHECK_C_SOURCE_COMPILES("\#define _WIN32_WINNT 0x0500
+        CHECK_C_SOURCE_COMPILES("\#define _WIN32_WINNT 0x0501
                                  \#include <windows.h>
                                  __int64 foo;
                                  int main() {return 0;}" HAVE___INT64)
@@ -436,6 +439,7 @@ SET(HAVE_OSS        0)
 SET(HAVE_SOLARIS    0)
 SET(HAVE_SNDIO      0)
 SET(HAVE_DSOUND     0)
+SET(HAVE_MMDEVAPI   0)
 SET(HAVE_WINMM      0)
 SET(HAVE_PORTAUDIO  0)
 SET(HAVE_PULSEAUDIO 0)
@@ -552,7 +556,7 @@ ENDIF()
 
 IF(HAVE_WINDOWS_H)
     IF(WINMM)
-        CHECK_INCLUDE_FILES("windows.h;mmsystem.h" HAVE_MMSYSTEM_H -D_WIN32_WINNT=0x0500)
+        CHECK_INCLUDE_FILES("windows.h;mmsystem.h" HAVE_MMSYSTEM_H -D_WIN32_WINNT=0x0501)
         IF(HAVE_MMSYSTEM_H AND HAVE_LIBWINMM)
             SET(HAVE_WINMM 1)
             SET(ALC_OBJS  ${ALC_OBJS} Alc/backends/winmm.c)
@@ -616,6 +620,18 @@ IF(COREAUDIO)
         SET(EXTRA_LIBS /System/Library/Frameworks/CoreAudio.framework ${EXTRA_LIBS})
         SET(EXTRA_LIBS /System/Library/Frameworks/AudioUnit.framework ${EXTRA_LIBS})
         SET(EXTRA_LIBS /System/Library/Frameworks/ApplicationServices.framework ${EXTRA_LIBS})
+
+        # Some versions of OSX may need the AudioToolbox framework. Add it if
+        # it's found.
+        FIND_LIBRARY(AUDIOTOOLBOX_LIBRARY
+                     NAMES AudioToolbox
+                     PATHS ~/Library/Frameworks
+                           /Library/Frameworks
+                           /System/Library/Frameworks
+                    )
+        IF(AUDIOTOOLBOX_LIBRARY)
+            SET(EXTRA_LIBS ${AUDIOTOOLBOX_LIBRARY} ${EXTRA_LIBS})
+        ENDIF()
     ENDIF()
 ENDIF()
 IF(REQUIRE_COREAUDIO AND NOT HAVE_COREAUDIO)
@@ -672,6 +688,10 @@ ENDIF()
 # This is always available
 SET(BACKENDS  "${BACKENDS} Null")
 
+IF(EXAMPLES)
+    PKG_CHECK_MODULES(FFMPEG libavcodec libavformat)
+ENDIF()
+
 IF(LIBTYPE STREQUAL "STATIC")
     ADD_DEFINITIONS(-DAL_LIBTYPE_STATIC)
     SET(PKG_CONFIG_CFLAGS -DAL_LIBTYPE_STATIC ${PKG_CONFIG_CFLAGS})
@@ -717,6 +737,7 @@ INSTALL(FILES include/AL/al.h
               include/AL/alext.h
               include/AL/efx.h
               include/AL/efx-creative.h
+              include/AL/efx-presets.h
         DESTINATION include/AL
 )
 INSTALL(FILES "${OpenAL_BINARY_DIR}/openal.pc"
@@ -756,4 +777,20 @@ IF(UTILS)
     )
     MESSAGE(STATUS "Building utility programs")
     MESSAGE(STATUS "")
+ENDIF()
+
+IF(EXAMPLES)
+    IF(FFMPEG_FOUND)
+        ADD_EXECUTABLE(alstream examples/alhelpers.c examples/alffmpeg.c examples/alstream.c)
+        TARGET_LINK_LIBRARIES(alstream ${FFMPEG_LIBRARIES} ${LIBNAME})
+        SET_TARGET_PROPERTIES(alstream PROPERTIES COMPILE_FLAGS "${FFMPEG_CFLAGS}")
+        INSTALL(TARGETS alstream
+                RUNTIME DESTINATION bin
+                LIBRARY DESTINATION "lib${LIB_SUFFIX}"
+                ARCHIVE DESTINATION "lib${LIB_SUFFIX}"
+        )
+
+        MESSAGE(STATUS "Building ffmpeg example programs")
+        MESSAGE(STATUS "")
+    ENDIF()
 ENDIF()

@@ -31,6 +31,10 @@
 #include "AL/al.h"
 #include "AL/alc.h"
 
+#ifndef WAVE_FORMAT_IEEE_FLOAT
+#define WAVE_FORMAT_IEEE_FLOAT  0x0003
+#endif
+
 
 typedef struct {
     // MMSYSTEM Device
@@ -38,7 +42,7 @@ typedef struct {
     HANDLE  hWaveThreadEvent;
     HANDLE  hWaveThread;
     DWORD   ulWaveThreadID;
-    LONG    lWaveBuffersCommitted;
+    volatile LONG lWaveBuffersCommitted;
     WAVEHDR WaveBuffer[4];
 
     union {
@@ -46,13 +50,11 @@ typedef struct {
         HWAVEOUT Out;
     } hWaveHandle;
 
-    ALuint Frequency;
+    WAVEFORMATEX wfexFormat;
 
     RingBuffer *pRing;
 } WinMMData;
 
-
-static const ALCchar woDefault[] = "WaveOut Default";
 
 static ALCchar **PlaybackDeviceList;
 static ALuint  NumPlaybackDevices;
@@ -156,22 +158,8 @@ static void CALLBACK WaveOutProc(HWAVEOUT hDevice,UINT uMsg,DWORD_PTR dwInstance
     if(uMsg != WOM_DONE)
         return;
 
-    // Decrement number of buffers in use
     InterlockedDecrement(&pData->lWaveBuffersCommitted);
-
-    if(pData->bWaveShutdown == AL_FALSE)
-    {
-        // Notify Wave Processor Thread that a Wave Header has returned
-        PostThreadMessage(pData->ulWaveThreadID, uMsg, 0, dwParam1);
-    }
-    else
-    {
-        if(pData->lWaveBuffersCommitted == 0)
-        {
-            // Post 'Quit' Message to WaveOut Processor Thread
-            PostThreadMessage(pData->ulWaveThreadID, WM_QUIT, 0, 0);
-        }
-    }
+    PostThreadMessage(pData->ulWaveThreadID, uMsg, 0, dwParam1);
 }
 
 /*
@@ -194,8 +182,15 @@ static DWORD WINAPI PlaybackThreadProc(LPVOID lpParameter)
 
     while(GetMessage(&msg, NULL, 0, 0))
     {
-        if(msg.message != WOM_DONE || pData->bWaveShutdown)
+        if(msg.message != WOM_DONE)
             continue;
+
+        if(pData->bWaveShutdown)
+        {
+            if(pData->lWaveBuffersCommitted == 0)
+                break;
+            continue;
+        }
 
         pWaveHdr = ((LPWAVEHDR)msg.lParam);
 
@@ -232,22 +227,8 @@ static void CALLBACK WaveInProc(HWAVEIN hDevice,UINT uMsg,DWORD_PTR dwInstance,D
     if(uMsg != WIM_DATA)
         return;
 
-    // Decrement number of buffers in use
     InterlockedDecrement(&pData->lWaveBuffersCommitted);
-
-    if(pData->bWaveShutdown == AL_FALSE)
-    {
-        // Notify Wave Processor Thread that a Wave Header has returned
-        PostThreadMessage(pData->ulWaveThreadID,uMsg,0,dwParam1);
-    }
-    else
-    {
-        if(pData->lWaveBuffersCommitted == 0)
-        {
-            // Post 'Quit' Message to WaveIn Processor Thread
-            PostThreadMessage(pData->ulWaveThreadID,WM_QUIT,0,0);
-        }
-    }
+    PostThreadMessage(pData->ulWaveThreadID,uMsg,0,dwParam1);
 }
 
 /*
@@ -268,8 +249,12 @@ static DWORD WINAPI CaptureThreadProc(LPVOID lpParameter)
 
     while(GetMessage(&msg, NULL, 0, 0))
     {
-        if(msg.message != WIM_DATA || pData->bWaveShutdown)
+        if(msg.message != WIM_DATA)
             continue;
+        /* Don't wait for other buffers to finish before quitting. We're
+         * closing so we don't need them. */
+        if(pData->bWaveShutdown)
+            break;
 
         pWaveHdr = ((LPWAVEHDR)msg.lParam);
 
@@ -293,75 +278,62 @@ static DWORD WINAPI CaptureThreadProc(LPVOID lpParameter)
 
 static ALCenum WinMMOpenPlayback(ALCdevice *pDevice, const ALCchar *deviceName)
 {
-    WAVEFORMATEX wfexFormat;
     WinMMData *pData = NULL;
     UINT lDeviceID = 0;
     MMRESULT res;
     ALuint i = 0;
 
-    // Find the Device ID matching the deviceName if valid
-    if(!deviceName || strcmp(deviceName, woDefault) == 0)
-        lDeviceID = WAVE_MAPPER;
-    else
-    {
-        if(!PlaybackDeviceList)
-            ProbePlaybackDevices();
+    if(!PlaybackDeviceList)
+        ProbePlaybackDevices();
 
-        for(i = 0;i < NumPlaybackDevices;i++)
+    // Find the Device ID matching the deviceName if valid
+    for(i = 0;i < NumPlaybackDevices;i++)
+    {
+        if(PlaybackDeviceList[i] &&
+           (!deviceName || strcmp(deviceName, PlaybackDeviceList[i]) == 0))
         {
-            if(PlaybackDeviceList[i] &&
-               strcmp(deviceName, PlaybackDeviceList[i]) == 0)
-            {
-                lDeviceID = i;
-                break;
-            }
+            lDeviceID = i;
+            break;
         }
-        if(i == NumPlaybackDevices)
-            return ALC_INVALID_VALUE;
     }
+    if(i == NumPlaybackDevices)
+        return ALC_INVALID_VALUE;
 
     pData = calloc(1, sizeof(*pData));
     if(!pData)
         return ALC_OUT_OF_MEMORY;
     pDevice->ExtraData = pData;
 
-    if(pDevice->FmtChans != DevFmtMono)
+retry_open:
+    memset(&pData->wfexFormat, 0, sizeof(WAVEFORMATEX));
+    if(pDevice->FmtType == DevFmtFloat)
     {
-        if((pDevice->Flags&DEVICE_CHANNELS_REQUEST) &&
-           pDevice->FmtChans != DevFmtStereo)
+        pData->wfexFormat.wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
+        pData->wfexFormat.wBitsPerSample = 32;
+    }
+    else
+    {
+        pData->wfexFormat.wFormatTag = WAVE_FORMAT_PCM;
+        if(pDevice->FmtType == DevFmtUByte || pDevice->FmtType == DevFmtByte)
+            pData->wfexFormat.wBitsPerSample = 8;
+        else
+            pData->wfexFormat.wBitsPerSample = 16;
+    }
+    pData->wfexFormat.nChannels = ((pDevice->FmtChans == DevFmtMono) ? 1 : 2);
+    pData->wfexFormat.nBlockAlign = pData->wfexFormat.wBitsPerSample *
+                                    pData->wfexFormat.nChannels / 8;
+    pData->wfexFormat.nSamplesPerSec = pDevice->Frequency;
+    pData->wfexFormat.nAvgBytesPerSec = pData->wfexFormat.nSamplesPerSec *
+                                        pData->wfexFormat.nBlockAlign;
+    pData->wfexFormat.cbSize = 0;
+
+    if((res=waveOutOpen(&pData->hWaveHandle.Out, lDeviceID, &pData->wfexFormat, (DWORD_PTR)&WaveOutProc, (DWORD_PTR)pDevice, CALLBACK_FUNCTION)) != MMSYSERR_NOERROR)
+    {
+        if(pDevice->FmtType == DevFmtFloat)
         {
-            ERR("Failed to set %s, got Stereo instead\n", DevFmtChannelsString(pDevice->FmtChans));
-            pDevice->Flags &= ~DEVICE_CHANNELS_REQUEST;
-        }
-        pDevice->FmtChans = DevFmtStereo;
-    }
-    switch(pDevice->FmtType)
-    {
-        case DevFmtByte:
-            pDevice->FmtType = DevFmtUByte;
-            break;
-        case DevFmtUShort:
-        case DevFmtFloat:
             pDevice->FmtType = DevFmtShort;
-            break;
-        case DevFmtUByte:
-        case DevFmtShort:
-            break;
-    }
-
-    memset(&wfexFormat, 0, sizeof(WAVEFORMATEX));
-    wfexFormat.wFormatTag = WAVE_FORMAT_PCM;
-    wfexFormat.nChannels = ChannelsFromDevFmt(pDevice->FmtChans);
-    wfexFormat.wBitsPerSample = BytesFromDevFmt(pDevice->FmtType) * 8;
-    wfexFormat.nBlockAlign = wfexFormat.wBitsPerSample *
-                             wfexFormat.nChannels / 8;
-    wfexFormat.nSamplesPerSec = pDevice->Frequency;
-    wfexFormat.nAvgBytesPerSec = wfexFormat.nSamplesPerSec *
-                                 wfexFormat.nBlockAlign;
-    wfexFormat.cbSize = 0;
-
-    if((res=waveOutOpen(&pData->hWaveHandle.Out, lDeviceID, &wfexFormat, (DWORD_PTR)&WaveOutProc, (DWORD_PTR)pDevice, CALLBACK_FUNCTION)) != MMSYSERR_NOERROR)
-    {
+            goto retry_open;
+        }
         ERR("waveOutOpen failed: %u\n", res);
         goto failure;
     }
@@ -373,10 +345,7 @@ static ALCenum WinMMOpenPlayback(ALCdevice *pDevice, const ALCchar *deviceName)
         goto failure;
     }
 
-    pData->Frequency = pDevice->Frequency;
-
-    pDevice->szDeviceName = strdup((lDeviceID==WAVE_MAPPER) ? woDefault :
-                                   PlaybackDeviceList[lDeviceID]);
+    pDevice->szDeviceName = strdup(PlaybackDeviceList[lDeviceID]);
     return ALC_NO_ERROR;
 
 failure:
@@ -408,6 +377,59 @@ static void WinMMClosePlayback(ALCdevice *device)
 
 static ALCboolean WinMMResetPlayback(ALCdevice *device)
 {
+    WinMMData *data = (WinMMData*)device->ExtraData;
+
+    device->UpdateSize = (ALuint)((ALuint64)device->UpdateSize *
+                                  data->wfexFormat.nSamplesPerSec /
+                                  device->Frequency);
+    device->UpdateSize = (device->UpdateSize*device->NumUpdates + 3) / 4;
+    device->NumUpdates = 4;
+    device->Frequency = data->wfexFormat.nSamplesPerSec;
+
+    if(data->wfexFormat.wFormatTag == WAVE_FORMAT_IEEE_FLOAT)
+    {
+        if(data->wfexFormat.wBitsPerSample == 32)
+            device->FmtType = DevFmtFloat;
+        else
+        {
+            ERR("Unhandled IEEE float sample depth: %d\n", data->wfexFormat.wBitsPerSample);
+            return ALC_FALSE;
+        }
+    }
+    else if(data->wfexFormat.wFormatTag == WAVE_FORMAT_PCM)
+    {
+        if(data->wfexFormat.wBitsPerSample == 16)
+            device->FmtType = DevFmtShort;
+        else if(data->wfexFormat.wBitsPerSample == 8)
+            device->FmtType = DevFmtUByte;
+        else
+        {
+            ERR("Unhandled PCM sample depth: %d\n", data->wfexFormat.wBitsPerSample);
+            return ALC_FALSE;
+        }
+    }
+    else
+    {
+        ERR("Unhandled format tag: 0x%04x\n", data->wfexFormat.wFormatTag);
+        return ALC_FALSE;
+    }
+
+    if(data->wfexFormat.nChannels == 2)
+        device->FmtChans = DevFmtStereo;
+    else if(data->wfexFormat.nChannels == 1)
+        device->FmtChans = DevFmtMono;
+    else
+    {
+        ERR("Unhandled channel count: %d\n", data->wfexFormat.nChannels);
+        return ALC_FALSE;
+    }
+    SetDefaultWFXChannelOrder(device);
+
+    return ALC_TRUE;
+}
+
+static ALCboolean WinMMStartPlayback(ALCdevice *device)
+{
     WinMMData *pData = (WinMMData*)device->ExtraData;
     ALbyte *BufferData;
     ALint lBufferSize;
@@ -416,18 +438,6 @@ static ALCboolean WinMMResetPlayback(ALCdevice *device)
     pData->hWaveThread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)PlaybackThreadProc, (LPVOID)device, 0, &pData->ulWaveThreadID);
     if(pData->hWaveThread == NULL)
         return ALC_FALSE;
-
-    device->UpdateSize = (ALuint)((ALuint64)device->UpdateSize *
-                                  pData->Frequency / device->Frequency);
-    if(device->Frequency != pData->Frequency)
-    {
-        if((device->Flags&DEVICE_FREQUENCY_REQUEST))
-            ERR("WinMM does not support changing sample rates (wanted %dhz, got %dhz)\n", device->Frequency, pData->Frequency);
-        device->Flags &= ~DEVICE_FREQUENCY_REQUEST;
-        device->Frequency = pData->Frequency;
-    }
-
-    SetDefaultWFXChannelOrder(device);
 
     pData->lWaveBuffersCommitted = 0;
 
@@ -484,7 +494,6 @@ static void WinMMStopPlayback(ALCdevice *device)
 
 static ALCenum WinMMOpenCapture(ALCdevice *pDevice, const ALCchar *deviceName)
 {
-    WAVEFORMATEX wfexCaptureFormat;
     ALbyte *BufferData = NULL;
     DWORD ulCapturedDataSize;
     WinMMData *pData = NULL;
@@ -497,53 +506,64 @@ static ALCenum WinMMOpenCapture(ALCdevice *pDevice, const ALCchar *deviceName)
         ProbeCaptureDevices();
 
     // Find the Device ID matching the deviceName if valid
-    if(deviceName)
+    for(i = 0;i < NumCaptureDevices;i++)
     {
-        for(i = 0;i < NumCaptureDevices;i++)
+        if(CaptureDeviceList[i] &&
+           (!deviceName || strcmp(deviceName, CaptureDeviceList[i]) == 0))
         {
-            if(CaptureDeviceList[i] &&
-               strcmp(deviceName, CaptureDeviceList[i]) == 0)
-            {
-                lDeviceID = i;
-                break;
-            }
-        }
-    }
-    else
-    {
-        for(i = 0;i < NumCaptureDevices;i++)
-        {
-            if(CaptureDeviceList[i])
-            {
-                lDeviceID = i;
-                break;
-            }
+            lDeviceID = i;
+            break;
         }
     }
     if(i == NumCaptureDevices)
         return ALC_INVALID_VALUE;
+
+    switch(pDevice->FmtChans)
+    {
+        case DevFmtMono:
+        case DevFmtStereo:
+            break;
+
+        case DevFmtQuad:
+        case DevFmtX51:
+        case DevFmtX51Side:
+        case DevFmtX61:
+        case DevFmtX71:
+            return ALC_INVALID_ENUM;
+    }
+
+    switch(pDevice->FmtType)
+    {
+        case DevFmtUByte:
+        case DevFmtShort:
+        case DevFmtInt:
+        case DevFmtFloat:
+            break;
+
+        case DevFmtByte:
+        case DevFmtUShort:
+        case DevFmtUInt:
+            return ALC_INVALID_ENUM;
+    }
 
     pData = calloc(1, sizeof(*pData));
     if(!pData)
         return ALC_OUT_OF_MEMORY;
     pDevice->ExtraData = pData;
 
-    if((pDevice->FmtChans != DevFmtMono && pDevice->FmtChans != DevFmtStereo) ||
-       (pDevice->FmtType != DevFmtUByte && pDevice->FmtType != DevFmtShort))
-        goto failure;
+    memset(&pData->wfexFormat, 0, sizeof(WAVEFORMATEX));
+    pData->wfexFormat.wFormatTag = ((pDevice->FmtType == DevFmtFloat) ?
+                                    WAVE_FORMAT_IEEE_FLOAT : WAVE_FORMAT_PCM);
+    pData->wfexFormat.nChannels = ChannelsFromDevFmt(pDevice->FmtChans);
+    pData->wfexFormat.wBitsPerSample = BytesFromDevFmt(pDevice->FmtType) * 8;
+    pData->wfexFormat.nBlockAlign = pData->wfexFormat.wBitsPerSample *
+                                    pData->wfexFormat.nChannels / 8;
+    pData->wfexFormat.nSamplesPerSec = pDevice->Frequency;
+    pData->wfexFormat.nAvgBytesPerSec = pData->wfexFormat.nSamplesPerSec *
+                                        pData->wfexFormat.nBlockAlign;
+    pData->wfexFormat.cbSize = 0;
 
-    memset(&wfexCaptureFormat, 0, sizeof(WAVEFORMATEX));
-    wfexCaptureFormat.wFormatTag = WAVE_FORMAT_PCM;
-    wfexCaptureFormat.nChannels = ChannelsFromDevFmt(pDevice->FmtChans);
-    wfexCaptureFormat.wBitsPerSample = BytesFromDevFmt(pDevice->FmtType) * 8;
-    wfexCaptureFormat.nBlockAlign = wfexCaptureFormat.wBitsPerSample *
-                                    wfexCaptureFormat.nChannels / 8;
-    wfexCaptureFormat.nSamplesPerSec = pDevice->Frequency;
-    wfexCaptureFormat.nAvgBytesPerSec = wfexCaptureFormat.nSamplesPerSec *
-                                        wfexCaptureFormat.nBlockAlign;
-    wfexCaptureFormat.cbSize = 0;
-
-    if((res=waveInOpen(&pData->hWaveHandle.In, lDeviceID, &wfexCaptureFormat, (DWORD_PTR)&WaveInProc, (DWORD_PTR)pDevice, CALLBACK_FUNCTION)) != MMSYSERR_NOERROR)
+    if((res=waveInOpen(&pData->hWaveHandle.In, lDeviceID, &pData->wfexFormat, (DWORD_PTR)&WaveInProc, (DWORD_PTR)pDevice, CALLBACK_FUNCTION)) != MMSYSERR_NOERROR)
     {
         ERR("waveInOpen failed: %u\n", res);
         goto failure;
@@ -556,24 +576,22 @@ static ALCenum WinMMOpenCapture(ALCdevice *pDevice, const ALCchar *deviceName)
         goto failure;
     }
 
-    pData->Frequency = pDevice->Frequency;
-
     // Allocate circular memory buffer for the captured audio
     ulCapturedDataSize = pDevice->UpdateSize*pDevice->NumUpdates;
 
     // Make sure circular buffer is at least 100ms in size
-    if(ulCapturedDataSize < (wfexCaptureFormat.nSamplesPerSec / 10))
-        ulCapturedDataSize = wfexCaptureFormat.nSamplesPerSec / 10;
+    if(ulCapturedDataSize < (pData->wfexFormat.nSamplesPerSec / 10))
+        ulCapturedDataSize = pData->wfexFormat.nSamplesPerSec / 10;
 
-    pData->pRing = CreateRingBuffer(wfexCaptureFormat.nBlockAlign, ulCapturedDataSize);
+    pData->pRing = CreateRingBuffer(pData->wfexFormat.nBlockAlign, ulCapturedDataSize);
     if(!pData->pRing)
         goto failure;
 
     pData->lWaveBuffersCommitted = 0;
 
     // Create 4 Buffers of 50ms each
-    lBufferSize = wfexCaptureFormat.nAvgBytesPerSec / 20;
-    lBufferSize -= (lBufferSize % wfexCaptureFormat.nBlockAlign);
+    lBufferSize = pData->wfexFormat.nAvgBytesPerSec / 20;
+    lBufferSize -= (lBufferSize % pData->wfexFormat.nBlockAlign);
 
     BufferData = calloc(4, lBufferSize);
     if(!BufferData)
@@ -631,12 +649,14 @@ static void WinMMCloseCapture(ALCdevice *pDevice)
     void *buffer = NULL;
     int i;
 
-    // Call waveOutReset to shutdown wave device
+    /* Tell the processing thread to quit and wait for it to do so. */
     pData->bWaveShutdown = AL_TRUE;
-    waveInReset(pData->hWaveHandle.In);
+    PostThreadMessage(pData->ulWaveThreadID, WM_QUIT, 0, 0);
 
-    // Wait for signal that Wave Thread has been destroyed
     WaitForSingleObjectEx(pData->hWaveThreadEvent, 5000, FALSE);
+
+    /* Make sure capture is stopped and all pending buffers are flushed. */
+    waveInReset(pData->hWaveHandle.In);
 
     CloseHandle(pData->hWaveThread);
     pData->hWaveThread = 0;
@@ -694,6 +714,7 @@ static const BackendFuncs WinMMFuncs = {
     WinMMOpenPlayback,
     WinMMClosePlayback,
     WinMMResetPlayback,
+    WinMMStartPlayback,
     WinMMStopPlayback,
     WinMMOpenCapture,
     WinMMCloseCapture,
@@ -735,16 +756,8 @@ void alcWinMMProbe(enum DevProbe type)
 
     switch(type)
     {
-        case DEVICE_PROBE:
-            ProbePlaybackDevices();
-            if(NumPlaybackDevices > 0)
-                AppendDeviceList(woDefault);
-            break;
-
         case ALL_DEVICE_PROBE:
             ProbePlaybackDevices();
-            if(NumPlaybackDevices > 0)
-                AppendAllDeviceList(woDefault);
             for(i = 0;i < NumPlaybackDevices;i++)
             {
                 if(PlaybackDeviceList[i])

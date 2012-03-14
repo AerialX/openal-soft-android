@@ -33,8 +33,8 @@
 static const ALCchar sndio_device[] = "SndIO Default";
 
 
-static void *sndio_handle;
 #ifdef HAVE_DYNLOAD
+static void *sndio_handle;
 #define MAKE_FUNC(x) static typeof(x) * p##x
 MAKE_FUNC(sio_initpar);
 MAKE_FUNC(sio_open);
@@ -76,9 +76,9 @@ MAKE_FUNC(sio_onvol);
 
 static ALCboolean sndio_load(void)
 {
+#ifdef HAVE_DYNLOAD
     if(!sndio_handle)
     {
-#ifdef HAVE_DYNLOAD
         sndio_handle = LoadLib("libsndio.so");
         if(!sndio_handle)
             return ALC_FALSE;
@@ -109,10 +109,8 @@ static ALCboolean sndio_load(void)
         LOAD_FUNC(sio_setvol);
         LOAD_FUNC(sio_onvol);
 #undef LOAD_FUNC
-#else
-        sndio_handle = (void*)0xDEADBEEF;
-#endif
     }
+#endif
     return ALC_TRUE;
 }
 
@@ -208,7 +206,6 @@ static ALCboolean sndio_reset_playback(ALCdevice *device)
     sio_initpar(&par);
 
     par.rate = device->Frequency;
-
     par.pchan = ((device->FmtChans != DevFmtMono) ? 2 : 1);
 
     switch(device->FmtType)
@@ -222,14 +219,20 @@ static ALCboolean sndio_reset_playback(ALCdevice *device)
             par.sig = 0;
             break;
         case DevFmtFloat:
-            device->FmtType = DevFmtShort;
-            /* fall-through */
         case DevFmtShort:
             par.bits = 16;
             par.sig = 1;
             break;
         case DevFmtUShort:
             par.bits = 16;
+            par.sig = 0;
+            break;
+        case DevFmtInt:
+            par.bits = 32;
+            par.sig = 1;
+            break;
+        case DevFmtUInt:
+            par.bits = 32;
             par.sig = 0;
             break;
     }
@@ -239,32 +242,10 @@ static ALCboolean sndio_reset_playback(ALCdevice *device)
     par.appbufsz = device->UpdateSize * (device->NumUpdates-1);
     if(!par.appbufsz) par.appbufsz = device->UpdateSize;
 
-
     if(!sio_setpar(data->sndHandle, &par) || !sio_getpar(data->sndHandle, &par))
     {
         ERR("Failed to set device parameters\n");
         return ALC_FALSE;
-    }
-
-    if(par.rate != device->Frequency)
-    {
-        if((device->Flags&DEVICE_FREQUENCY_REQUEST))
-            ERR("Failed to set frequency %uhz, got %uhz instead\n", device->Frequency, par.rate);
-        device->Flags &= ~DEVICE_FREQUENCY_REQUEST;
-        device->Frequency = par.rate;
-    }
-
-    if(par.pchan != ChannelsFromDevFmt(device->FmtChans))
-    {
-        if(par.pchan != 1 && par.pchan != 2)
-        {
-            ERR("Unhandled channel count: %u\n", par.pchan);
-            return ALC_FALSE;
-        }
-        if((device->Flags&DEVICE_CHANNELS_REQUEST))
-            ERR("Failed to set %s, got %u channels instead\n", DevFmtChannelsString(device->FmtChans), par.pchan);
-        device->Flags &= ~DEVICE_CHANNELS_REQUEST;
-        device->FmtChans = ((par.pchan==1) ? DevFmtMono : DevFmtStereo);
     }
 
     if(par.bits != par.bps*8)
@@ -272,6 +253,9 @@ static ALCboolean sndio_reset_playback(ALCdevice *device)
         ERR("Padded samples not supported (%u of %u bits)\n", par.bits, par.bps*8);
         return ALC_FALSE;
     }
+
+    device->Frequency = par.rate;
+    device->FmtChans = ((par.pchan==1) ? DevFmtMono : DevFmtStereo);
 
     if(par.bits == 8 && par.sig == 1)
         device->FmtType = DevFmtByte;
@@ -281,18 +265,27 @@ static ALCboolean sndio_reset_playback(ALCdevice *device)
         device->FmtType = DevFmtShort;
     else if(par.bits == 16 && par.sig == 0)
         device->FmtType = DevFmtUShort;
+    else if(par.bits == 32 && par.sig == 1)
+        device->FmtType = DevFmtInt;
+    else if(par.bits == 32 && par.sig == 0)
+        device->FmtType = DevFmtUInt;
     else
     {
         ERR("Unhandled sample format: %s %u-bit\n", (par.sig?"signed":"unsigned"), par.bits);
         return ALC_FALSE;
     }
 
-
     device->UpdateSize = par.round;
     device->NumUpdates = (par.bufsz/par.round) + 1;
 
     SetDefaultChannelOrder(device);
 
+    return ALC_TRUE;
+}
+
+static ALCboolean sndio_start_playback(ALCdevice *device)
+{
+    sndio_data *data = device->ExtraData;
 
     if(!sio_start(data->sndHandle))
     {
@@ -300,7 +293,7 @@ static ALCboolean sndio_reset_playback(ALCdevice *device)
         return ALC_FALSE;
     }
 
-    data->data_size = device->UpdateSize * par.bps * par.pchan;
+    data->data_size = device->UpdateSize * FrameSizeFromDevFmt(device->FmtChans, device->FmtType);
     data->mix_data = calloc(1, data->data_size);
 
     data->thread = StartThread(sndio_proc, device);
@@ -339,6 +332,7 @@ static const BackendFuncs sndio_funcs = {
     sndio_open_playback,
     sndio_close_playback,
     sndio_reset_playback,
+    sndio_start_playback,
     sndio_stop_playback,
     NULL,
     NULL,
@@ -369,9 +363,6 @@ void alc_sndio_probe(enum DevProbe type)
 {
     switch(type)
     {
-        case DEVICE_PROBE:
-            AppendDeviceList(sndio_device);
-            break;
         case ALL_DEVICE_PROBE:
             AppendAllDeviceList(sndio_device);
             break;

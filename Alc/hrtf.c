@@ -28,21 +28,6 @@
 #include "alMain.h"
 #include "alSource.h"
 
-/* External HRTF file format (LE byte order):
- *
- * ALchar   magic[8] = "MinPHR00";
- * ALuint   sampleRate;
- *
- * ALushort hrirCount; // Required value: 828
- * ALushort hrirSize;  // Required value: 32
- * ALubyte  evCount;   // Required value: 19
- *
- * ALushort evOffset[evCount]; // Required values:
- *   { 0, 1, 13, 37, 73, 118, 174, 234, 306, 378, 450, 522, 594, 654, 710, 755, 791, 815, 827 }
- *
- * ALshort coefficients[hrirCount][hrirSize];
- * ALubyte delays[hrirCount]; // Element values must not exceed 127
- */
 
 static const ALchar magicMarker[8] = "MinPHR00";
 
@@ -94,7 +79,7 @@ static void CalcAzIndices(ALuint evidx, ALfloat az, ALuint *azidx, ALfloat *azmu
 // values.
 ALfloat CalcHrtfDelta(ALfloat oldGain, ALfloat newGain, const ALfloat olddir[3], const ALfloat newdir[3])
 {
-    ALfloat gainChange, angleChange;
+    ALfloat gainChange, angleChange, change;
 
     // Calculate the normalized dB gain change.
     newGain = maxf(newGain, 0.0001f);
@@ -117,7 +102,8 @@ ALfloat CalcHrtfDelta(ALfloat oldGain, ALfloat newGain, const ALfloat olddir[3],
 
     // Use the largest of the two changes for the delta factor, and apply a
     // significance shaping function to it.
-    return clampf(angleChange*2.0f, gainChange*2.0f, 1.0f);
+    change = maxf(angleChange, gainChange) * 2.0f;
+    return minf(change, 1.0f);
 }
 
 // Calculates static HRIR coefficients and delays for the given polar

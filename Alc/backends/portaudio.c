@@ -33,8 +33,8 @@
 static const ALCchar pa_device[] = "PortAudio Default";
 
 
-static void *pa_handle;
 #ifdef HAVE_DYNLOAD
+static void *pa_handle;
 #define MAKE_FUNC(x) static typeof(x) * p##x
 MAKE_FUNC(Pa_Initialize);
 MAKE_FUNC(Pa_Terminate);
@@ -60,11 +60,11 @@ MAKE_FUNC(Pa_GetStreamInfo);
 
 static ALCboolean pa_load(void)
 {
-    if(!pa_handle)
-    {
-        PaError err;
+    PaError err;
 
 #ifdef HAVE_DYNLOAD
+    if(!pa_handle)
+    {
 #ifdef _WIN32
 # define PALIB "portaudio.dll"
 #elif defined(__APPLE__) && defined(__MACH__)
@@ -98,9 +98,6 @@ static ALCboolean pa_load(void)
         LOAD_FUNC(Pa_GetDefaultOutputDevice);
         LOAD_FUNC(Pa_GetStreamInfo);
 #undef LOAD_FUNC
-#else
-        pa_handle = (void*)0xDEADBEEF;
-#endif
 
         if((err=Pa_Initialize()) != paNoError)
         {
@@ -110,6 +107,13 @@ static ALCboolean pa_load(void)
             return ALC_FALSE;
         }
     }
+#else
+    if((err=Pa_Initialize()) != paNoError)
+    {
+        ERR("Pa_Initialize() returned an error: %s\n", Pa_GetErrorText(err));
+        return ALC_FALSE;
+    }
+#endif
     return ALC_TRUE;
 }
 
@@ -175,6 +179,9 @@ static ALCenum pa_open_playback(ALCdevice *device, const ALCchar *deviceName)
                                  (float)device->Frequency;
     outParams.hostApiSpecificStreamInfo = NULL;
 
+    outParams.channelCount = ((device->FmtChans == DevFmtMono) ? 1 : 2);
+
+retry_open:
     switch(device->FmtType)
     {
         case DevFmtByte:
@@ -189,25 +196,31 @@ static ALCenum pa_open_playback(ALCdevice *device, const ALCchar *deviceName)
         case DevFmtShort:
             outParams.sampleFormat = paInt16;
             break;
+        case DevFmtUInt:
+            device->FmtType = DevFmtInt;
+            /* fall-through */
+        case DevFmtInt:
+            outParams.sampleFormat = paInt32;
+            break;
         case DevFmtFloat:
             outParams.sampleFormat = paFloat32;
             break;
     }
-    outParams.channelCount = ((device->FmtChans == DevFmtMono) ? 1 : 2);
-
-    SetDefaultChannelOrder(device);
 
     err = Pa_OpenStream(&data->stream, NULL, &outParams, device->Frequency,
                         device->UpdateSize, paNoFlag, pa_callback, device);
     if(err != paNoError)
     {
+        if(device->FmtType == DevFmtFloat)
+        {
+            device->FmtType = DevFmtShort;
+            goto retry_open;
+        }
         ERR("Pa_OpenStream() returned an error: %s\n", Pa_GetErrorText(err));
         device->ExtraData = NULL;
         free(data);
         return ALC_INVALID_VALUE;
     }
-
-    device->szDeviceName = strdup(deviceName);
 
     if((ALuint)outParams.channelCount != ChannelsFromDevFmt(device->FmtChans))
     {
@@ -224,6 +237,9 @@ static ALCenum pa_open_playback(ALCdevice *device, const ALCchar *deviceName)
         device->Flags &= ~DEVICE_CHANNELS_REQUEST;
         device->FmtChans = ((outParams.channelCount==1) ? DevFmtMono : DevFmtStereo);
     }
+    SetDefaultChannelOrder(device);
+
+    device->szDeviceName = strdup(deviceName);
 
     return ALC_NO_ERROR;
 }
@@ -245,17 +261,18 @@ static ALCboolean pa_reset_playback(ALCdevice *device)
 {
     pa_data *data = (pa_data*)device->ExtraData;
     const PaStreamInfo *streamInfo;
-    PaError err;
 
     streamInfo = Pa_GetStreamInfo(data->stream);
-    if(device->Frequency != streamInfo->sampleRate)
-    {
-        if((device->Flags&DEVICE_FREQUENCY_REQUEST))
-            ERR("PortAudio does not support changing sample rates (wanted %dhz, got %.1fhz)\n", device->Frequency, streamInfo->sampleRate);
-        device->Flags &= ~DEVICE_FREQUENCY_REQUEST;
-        device->Frequency = streamInfo->sampleRate;
-    }
+    device->Frequency = streamInfo->sampleRate;
     device->UpdateSize = data->update_size;
+
+    return ALC_TRUE;
+}
+
+static ALCboolean pa_start_playback(ALCdevice *device)
+{
+    pa_data *data = (pa_data*)device->ExtraData;
+    PaError err;
 
     err = Pa_StartStream(data->stream);
     if(err != paNoError)
@@ -316,11 +333,15 @@ static ALCenum pa_open_capture(ALCdevice *device, const ALCchar *deviceName)
         case DevFmtShort:
             inParams.sampleFormat = paInt16;
             break;
+        case DevFmtInt:
+            inParams.sampleFormat = paInt32;
+            break;
         case DevFmtFloat:
             inParams.sampleFormat = paFloat32;
             break;
+        case DevFmtUInt:
         case DevFmtUShort:
-            ERR("Unsigned short samples not supported\n");
+            ERR("%s samples not supported\n", DevFmtTypeString(device->FmtType));
             goto error;
     }
     inParams.channelCount = ChannelsFromDevFmt(device->FmtChans);
@@ -395,6 +416,7 @@ static const BackendFuncs pa_funcs = {
     pa_open_playback,
     pa_close_playback,
     pa_reset_playback,
+    pa_start_playback,
     pa_stop_playback,
     pa_open_capture,
     pa_close_capture,
@@ -414,23 +436,22 @@ ALCboolean alc_pa_init(BackendFuncs *func_list)
 
 void alc_pa_deinit(void)
 {
+#ifdef HAVE_DYNLOAD
     if(pa_handle)
     {
         Pa_Terminate();
-#ifdef HAVE_DYNLOAD
         CloseLib(pa_handle);
-#endif
         pa_handle = NULL;
     }
+#else
+    Pa_Terminate();
+#endif
 }
 
 void alc_pa_probe(enum DevProbe type)
 {
     switch(type)
     {
-        case DEVICE_PROBE:
-            AppendDeviceList(pa_device);
-            break;
         case ALL_DEVICE_PROBE:
             AppendAllDeviceList(pa_device);
             break;

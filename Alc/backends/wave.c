@@ -87,14 +87,9 @@ static ALuint WaveProc(ALvoid *ptr)
     ALuint now, start;
     ALuint64 avail, done;
     size_t fs;
-    union {
-        short s;
-        char b[sizeof(short)];
-    } uSB;
     const ALuint restTime = (ALuint64)pDevice->UpdateSize * 1000 /
                             pDevice->Frequency / 2;
 
-    uSB.s = 1;
     frameSize = FrameSizeFromDevFmt(pDevice->FmtChans, pDevice->FmtType);
 
     done = 0;
@@ -106,9 +101,9 @@ static ALuint WaveProc(ALvoid *ptr)
         avail = (ALuint64)(now-start) * pDevice->Frequency / 1000;
         if(avail < done)
         {
-            /* Timer wrapped. Add the remainder of the cycle to the available
-             * count and reset the number of samples done */
-            avail += (ALuint64)0xFFFFFFFFu*pDevice->Frequency/1000 - done;
+            /* Timer wrapped (50 days???). Add the remainder of the cycle to
+             * the available count and reset the number of samples done */
+            avail += ((ALuint64)1<<32)*pDevice->Frequency/1000 - done;
             done = 0;
         }
         if(avail-done < pDevice->UpdateSize)
@@ -122,7 +117,7 @@ static ALuint WaveProc(ALvoid *ptr)
             aluMixData(pDevice, data->buffer, pDevice->UpdateSize);
             done += pDevice->UpdateSize;
 
-            if(uSB.b[0] != 1)
+            if(!IS_LITTLE_ENDIAN)
             {
                 ALuint bytesize = BytesFromDevFmt(pDevice->FmtType);
                 ALubyte *bytes = data->buffer;
@@ -214,8 +209,12 @@ static ALCboolean wave_reset_playback(ALCdevice *device)
         case DevFmtUShort:
             device->FmtType = DevFmtShort;
             break;
+        case DevFmtUInt:
+            device->FmtType = DevFmtInt;
+            break;
         case DevFmtUByte:
         case DevFmtShort:
+        case DevFmtInt:
         case DevFmtFloat:
             break;
     }
@@ -259,18 +258,24 @@ static ALCboolean wave_reset_playback(ALCdevice *device)
         ERR("Error writing header: %s\n", strerror(errno));
         return ALC_FALSE;
     }
-
     data->DataStart = ftell(data->f);
 
-    data->size = device->UpdateSize * channels * bits / 8;
+    SetDefaultWFXChannelOrder(device);
+
+    return ALC_TRUE;
+}
+
+static ALCboolean wave_start_playback(ALCdevice *device)
+{
+    wave_data *data = (wave_data*)device->ExtraData;
+
+    data->size = device->UpdateSize * FrameSizeFromDevFmt(device->FmtChans, device->FmtType);
     data->buffer = malloc(data->size);
     if(!data->buffer)
     {
         ERR("Buffer malloc failed\n");
         return ALC_FALSE;
     }
-
-    SetDefaultWFXChannelOrder(device);
 
     data->thread = StartThread(WaveProc, device);
     if(data->thread == NULL)
@@ -317,6 +322,7 @@ static const BackendFuncs wave_funcs = {
     wave_open_playback,
     wave_close_playback,
     wave_reset_playback,
+    wave_start_playback,
     wave_stop_playback,
     NULL,
     NULL,
@@ -343,9 +349,6 @@ void alc_wave_probe(enum DevProbe type)
 
     switch(type)
     {
-        case DEVICE_PROBE:
-            AppendDeviceList(waveDevice);
-            break;
         case ALL_DEVICE_PROBE:
             AppendAllDeviceList(waveDevice);
             break;

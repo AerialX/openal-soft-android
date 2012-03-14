@@ -44,6 +44,12 @@ DEFINE_GUID(IID_IMMDeviceEnumerator,  0xa95664d2, 0x9614, 0x4f35, 0xa7,0x46, 0xd
 DEFINE_GUID(IID_IAudioClient,         0x1cb9ad4c, 0xdbfa, 0x4c32, 0xb1,0x78, 0xc2,0xf5,0x68,0xa7,0x03,0xb2);
 DEFINE_GUID(IID_IAudioRenderClient,   0xf294acfc, 0x3146, 0x4483, 0xa7,0xbf, 0xad,0xdc,0xa7,0xc2,0x60,0xe2);
 
+#ifdef HAVE_MMDEVAPI
+#include <devpropdef.h>
+
+DEFINE_DEVPROPKEY(DEVPKEY_Device_FriendlyName, 0xa45c254e, 0xdf1c, 0x4efd, 0x80,0x20, 0x67,0xd1,0x46,0xa8,0x50,0xe0, 14);
+#endif
+
 #endif
 
 #include "alMain.h"
@@ -96,6 +102,22 @@ void *GetSymbol(void *handle, const char *name)
     ret = (void*)GetProcAddress((HANDLE)handle, name);
     if(ret == NULL)
         ERR("Failed to load %s\n", name);
+    return ret;
+}
+
+WCHAR *strdupW(const WCHAR *str)
+{
+    const WCHAR *n;
+    WCHAR *ret;
+    size_t len;
+
+    n = str;
+    while(*n) n++;
+    len = n - str;
+
+    ret = calloc(sizeof(WCHAR), len+1);
+    if(ret != NULL)
+        memcpy(ret, str, sizeof(WCHAR)*len);
     return ret;
 }
 

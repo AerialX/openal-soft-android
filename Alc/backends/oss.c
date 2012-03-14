@@ -49,6 +49,9 @@
 
 static const ALCchar oss_device[] = "OSS Default";
 
+static const char *oss_driver = "/dev/dsp";
+static const char *oss_capture = "/dev/dsp";
+
 typedef struct {
     int fd;
     volatile int killNow;
@@ -149,11 +152,8 @@ static ALuint OSSCaptureProc(ALvoid *ptr)
 
 static ALCenum oss_open_playback(ALCdevice *device, const ALCchar *deviceName)
 {
-    char driver[64];
     oss_data *data;
 
-    strncpy(driver, GetConfigValue("oss", "device", "/dev/dsp"), sizeof(driver)-1);
-    driver[sizeof(driver)-1] = 0;
     if(!deviceName)
         deviceName = oss_device;
     else if(strcmp(deviceName, oss_device) != 0)
@@ -162,11 +162,11 @@ static ALCenum oss_open_playback(ALCdevice *device, const ALCchar *deviceName)
     data = (oss_data*)calloc(1, sizeof(oss_data));
     data->killNow = 0;
 
-    data->fd = open(driver, O_WRONLY);
+    data->fd = open(oss_driver, O_WRONLY);
     if(data->fd == -1)
     {
         free(data);
-        ERR("Could not open %s: %s\n", driver, strerror(errno));
+        ERR("Could not open %s: %s\n", oss_driver, strerror(errno));
         return ALC_INVALID_VALUE;
     }
 
@@ -206,6 +206,8 @@ static ALCboolean oss_reset_playback(ALCdevice *device)
             ossFormat = AFMT_U8;
             break;
         case DevFmtUShort:
+        case DevFmtInt:
+        case DevFmtUInt:
         case DevFmtFloat:
             device->FmtType = DevFmtShort;
             /* fall-through */
@@ -262,20 +264,21 @@ static ALCboolean oss_reset_playback(ALCdevice *device)
         return ALC_FALSE;
     }
 
-    if(device->Frequency != (ALuint)ossSpeed)
-    {
-        if((device->Flags&DEVICE_FREQUENCY_REQUEST))
-            ERR("Failed to set %dhz, got %dhz instead\n", device->Frequency, ossSpeed);
-        device->Flags &= ~DEVICE_FREQUENCY_REQUEST;
-        device->Frequency = ossSpeed;
-    }
+    device->Frequency = ossSpeed;
     device->UpdateSize = info.fragsize / frameSize;
     device->NumUpdates = info.fragments + 1;
 
-    data->data_size = device->UpdateSize * frameSize;
-    data->mix_data = calloc(1, data->data_size);
-
     SetDefaultChannelOrder(device);
+
+    return ALC_TRUE;
+}
+
+static ALCboolean oss_start_playback(ALCdevice *device)
+{
+    oss_data *data = (oss_data*)device->ExtraData;
+
+    data->data_size = device->UpdateSize * FrameSizeFromDevFmt(device->FmtChans, device->FmtType);
+    data->mix_data = calloc(1, data->data_size);
 
     data->thread = StartThread(OSSProc, device);
     if(data->thread == NULL)
@@ -316,14 +319,10 @@ static ALCenum oss_open_capture(ALCdevice *device, const ALCchar *deviceName)
     audio_buf_info info;
     ALuint frameSize;
     int numChannels;
-    char driver[64];
     oss_data *data;
     int ossFormat;
     int ossSpeed;
     char *err;
-
-    strncpy(driver, GetConfigValue("oss", "capture", "/dev/dsp"), sizeof(driver)-1);
-    driver[sizeof(driver)-1] = 0;
 
     if(!deviceName)
         deviceName = oss_device;
@@ -333,11 +332,11 @@ static ALCenum oss_open_capture(ALCdevice *device, const ALCchar *deviceName)
     data = (oss_data*)calloc(1, sizeof(oss_data));
     data->killNow = 0;
 
-    data->fd = open(driver, O_RDONLY);
+    data->fd = open(oss_capture, O_RDONLY);
     if(data->fd == -1)
     {
         free(data);
-        ERR("Could not open %s: %s\n", driver, strerror(errno));
+        ERR("Could not open %s: %s\n", oss_capture, strerror(errno));
         return ALC_INVALID_VALUE;
     }
 
@@ -353,9 +352,11 @@ static ALCenum oss_open_capture(ALCdevice *device, const ALCchar *deviceName)
             ossFormat = AFMT_S16_NE;
             break;
         case DevFmtUShort:
+        case DevFmtInt:
+        case DevFmtUInt:
         case DevFmtFloat:
             free(data);
-            ERR("%s capture samples not supported on OSS\n", DevFmtTypeString(device->FmtType));
+            ERR("%s capture samples not supported\n", DevFmtTypeString(device->FmtType));
             return ALC_INVALID_VALUE;
     }
 
@@ -479,6 +480,7 @@ static const BackendFuncs oss_funcs = {
     oss_open_playback,
     oss_close_playback,
     oss_reset_playback,
+    oss_start_playback,
     oss_stop_playback,
     oss_open_capture,
     oss_close_capture,
@@ -490,6 +492,9 @@ static const BackendFuncs oss_funcs = {
 
 ALCboolean alc_oss_init(BackendFuncs *func_list)
 {
+    ConfigValueStr("oss", "device", &oss_driver);
+    ConfigValueStr("oss", "capture", &oss_capture);
+
     *func_list = oss_funcs;
     return ALC_TRUE;
 }
@@ -502,21 +507,11 @@ void alc_oss_probe(enum DevProbe type)
 {
     switch(type)
     {
-        case DEVICE_PROBE:
-        {
-#ifdef HAVE_STAT
-            struct stat buf;
-            if(stat(GetConfigValue("oss", "device", "/dev/dsp"), &buf) == 0)
-#endif
-                AppendDeviceList(oss_device);
-        }
-        break;
-
         case ALL_DEVICE_PROBE:
         {
 #ifdef HAVE_STAT
             struct stat buf;
-            if(stat(GetConfigValue("oss", "device", "/dev/dsp"), &buf) == 0)
+            if(stat(oss_device, &buf) == 0)
 #endif
                 AppendAllDeviceList(oss_device);
         }
@@ -526,7 +521,7 @@ void alc_oss_probe(enum DevProbe type)
         {
 #ifdef HAVE_STAT
             struct stat buf;
-            if(stat(GetConfigValue("oss", "capture", "/dev/dsp"), &buf) == 0)
+            if(stat(oss_capture, &buf) == 0)
 #endif
                 AppendCaptureDeviceList(oss_device);
         }

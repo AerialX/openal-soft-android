@@ -32,7 +32,6 @@
 #include "alSource.h"
 
 
-static ALvoid InitializeEffect(ALCcontext *Context, ALeffectslot *EffectSlot, ALeffect *effect);
 static ALenum ResizeEffectSlotArray(ALCcontext *Context, ALsizei count);
 static ALvoid RemoveEffectSlotArray(ALCcontext *Context, ALeffectslot *val);
 
@@ -40,18 +39,16 @@ static ALvoid RemoveEffectSlotArray(ALCcontext *Context, ALeffectslot *val);
 AL_API ALvoid AL_APIENTRY alGenAuxiliaryEffectSlots(ALsizei n, ALuint *effectslots)
 {
     ALCcontext *Context;
-    ALCdevice *Device;
 
     Context = GetContextRef();
     if(!Context) return;
 
-    Device = Context->Device;
     if(n < 0 || IsBadWritePtr((void*)effectslots, n * sizeof(ALuint)))
         alSetError(Context, AL_INVALID_VALUE);
     else
     {
         ALenum err;
-        ALsizei i, j;
+        ALsizei i;
 
         err = ResizeEffectSlotArray(Context, n);
         if(err != AL_NO_ERROR)
@@ -63,7 +60,7 @@ AL_API ALvoid AL_APIENTRY alGenAuxiliaryEffectSlots(ALsizei n, ALuint *effectslo
         for(i = 0;i < n;i++)
         {
             ALeffectslot *slot = calloc(1, sizeof(ALeffectslot));
-            if(!slot || !(slot->EffectState=NoneCreate()))
+            if(!slot || InitEffectSlot(slot) != AL_NO_ERROR)
             {
                 free(slot);
                 // We must have run out or memory
@@ -71,18 +68,6 @@ AL_API ALvoid AL_APIENTRY alGenAuxiliaryEffectSlots(ALsizei n, ALuint *effectslo
                 alDeleteAuxiliaryEffectSlots(i, effectslots);
                 break;
             }
-
-            slot->Gain = 1.0;
-            slot->AuxSendAuto = AL_TRUE;
-            slot->NeedsUpdate = AL_FALSE;
-            for(j = 0;j < BUFFERSIZE;j++)
-                slot->WetBuffer[j] = 0.0f;
-            for(j = 0;j < 1;j++)
-            {
-                slot->ClickRemoval[j] = 0.0f;
-                slot->PendingClicks[j] = 0.0f;
-            }
-            slot->ref = 0;
 
             LockContext(Context);
             err = ResizeEffectSlotArray(Context, 1);
@@ -512,7 +497,7 @@ static ALenum ResizeEffectSlotArray(ALCcontext *Context, ALsizei count)
     return AL_NO_ERROR;
 }
 
-static ALvoid InitializeEffect(ALCcontext *Context, ALeffectslot *EffectSlot, ALeffect *effect)
+ALvoid InitializeEffect(ALCcontext *Context, ALeffectslot *EffectSlot, ALeffect *effect)
 {
     ALenum newtype = (effect ? effect->type : AL_EFFECT_NULL);
     ALeffectState *State = NULL;
@@ -565,12 +550,13 @@ static ALvoid InitializeEffect(ALCcontext *Context, ALeffectslot *EffectSlot, AL
 
         if(ALeffectState_DeviceUpdate(State, Context->Device) == AL_FALSE)
         {
+            RestoreFPUMode(oldMode);
             UnlockContext(Context);
             ALeffectState_Destroy(State);
             alSetError(Context, AL_OUT_OF_MEMORY);
             return;
         }
-        State = ExchangePtr((void**)&EffectSlot->EffectState, State);
+        State = ExchangePtr((XchgPtr*)&EffectSlot->EffectState, State);
 
         if(!effect)
             memset(&EffectSlot->effect, 0, sizeof(EffectSlot->effect));
@@ -599,6 +585,28 @@ static ALvoid InitializeEffect(ALCcontext *Context, ALeffectslot *EffectSlot, AL
     }
 }
 
+
+ALenum InitEffectSlot(ALeffectslot *slot)
+{
+    ALint i;
+
+    if(!(slot->EffectState=NoneCreate()))
+        return AL_OUT_OF_MEMORY;
+
+    slot->Gain = 1.0;
+    slot->AuxSendAuto = AL_TRUE;
+    slot->NeedsUpdate = AL_FALSE;
+    for(i = 0;i < BUFFERSIZE;i++)
+        slot->WetBuffer[i] = 0.0f;
+    for(i = 0;i < 1;i++)
+    {
+        slot->ClickRemoval[i] = 0.0f;
+        slot->PendingClicks[i] = 0.0f;
+    }
+    slot->ref = 0;
+
+    return AL_NO_ERROR;
+}
 
 ALvoid ReleaseALAuxiliaryEffectSlots(ALCcontext *Context)
 {

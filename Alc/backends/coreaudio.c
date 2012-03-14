@@ -173,6 +173,17 @@ static ALCenum ca_open_playback(ALCdevice *device, const ALCchar *deviceName)
         return ALC_INVALID_VALUE;
     }
 
+    /* init and start the default audio unit... */
+    err = AudioUnitInitialize(data->audioUnit);
+    if(err != noErr)
+    {
+        ERR("AudioUnitInitialize failed\n");
+        CloseComponent(data->audioUnit);
+        free(data);
+        device->ExtraData = NULL;
+        return ALC_FALSE;
+    }
+
     return ALC_NO_ERROR;
 }
 
@@ -180,6 +191,7 @@ static void ca_close_playback(ALCdevice *device)
 {
     ca_data *data = (ca_data*)device->ExtraData;
 
+    AudioUnitUninitialize(data->audioUnit);
     CloseComponent(data->audioUnit);
 
     free(data);
@@ -194,20 +206,9 @@ static ALCboolean ca_reset_playback(ALCdevice *device)
     OSStatus err;
     UInt32 size;
 
-    /* init and start the default audio unit... */
-    err = AudioUnitInitialize(data->audioUnit);
+    err = AudioUnitUninitialize(data->audioUnit);
     if(err != noErr)
-    {
-        ERR("AudioUnitInitialize failed\n");
-        return ALC_FALSE;
-    }
-
-    err = AudioOutputUnitStart(data->audioUnit);
-    if(err != noErr)
-    {
-        ERR("AudioOutputUnitStart failed\n");
-        return ALC_FALSE;
-    }
+        ERR("-- AudioUnitUninitialize failed.\n");
 
     /* retrieve default output unit's properties (output side) */
     size = sizeof(AudioStreamBasicDescription);
@@ -238,10 +239,6 @@ static ALCboolean ca_reset_playback(ALCdevice *device)
 
     if(device->Frequency != streamFormat.mSampleRate)
     {
-        if((device->Flags&DEVICE_FREQUENCY_REQUEST))
-            ERR("CoreAudio does not support changing sample rates (wanted %dhz, got %dhz)\n", device->Frequency, streamFormat.mSampleRate);
-        device->Flags &= ~DEVICE_FREQUENCY_REQUEST;
-
         device->UpdateSize = (ALuint)((ALuint64)device->UpdateSize *
                                       streamFormat.mSampleRate /
                                       device->Frequency);
@@ -253,62 +250,25 @@ static ALCboolean ca_reset_playback(ALCdevice *device)
     switch(streamFormat.mChannelsPerFrame)
     {
         case 1:
-            if((device->Flags&DEVICE_CHANNELS_REQUEST) &&
-               device->FmtChans != DevFmtMono)
-            {
-                ERR("Failed to set %s, got Mono instead\n", DevFmtChannelsString(device->FmtChans));
-                device->Flags &= ~DEVICE_CHANNELS_REQUEST;
-            }
             device->FmtChans = DevFmtMono;
             break;
         case 2:
-            if((device->Flags&DEVICE_CHANNELS_REQUEST) &&
-               device->FmtChans != DevFmtStereo)
-            {
-                ERR("Failed to set %s, got Stereo instead\n", DevFmtChannelsString(device->FmtChans));
-                device->Flags &= ~DEVICE_CHANNELS_REQUEST;
-            }
             device->FmtChans = DevFmtStereo;
             break;
         case 4:
-            if((device->Flags&DEVICE_CHANNELS_REQUEST) &&
-               device->FmtChans != DevFmtQuad)
-            {
-                ERR("Failed to set %s, got Quad instead\n", DevFmtChannelsString(device->FmtChans));
-                device->Flags &= ~DEVICE_CHANNELS_REQUEST;
-            }
             device->FmtChans = DevFmtQuad;
             break;
         case 6:
-            if((device->Flags&DEVICE_CHANNELS_REQUEST) &&
-               device->FmtChans != DevFmtX51)
-            {
-                ERR("Failed to set %s, got 5.1 Surround instead\n", DevFmtChannelsString(device->FmtChans));
-                device->Flags &= ~DEVICE_CHANNELS_REQUEST;
-            }
             device->FmtChans = DevFmtX51;
             break;
         case 7:
-            if((device->Flags&DEVICE_CHANNELS_REQUEST) &&
-               device->FmtChans != DevFmtX61)
-            {
-                ERR("Failed to set %s, got 6.1 Surround instead\n", DevFmtChannelsString(device->FmtChans));
-                device->Flags &= ~DEVICE_CHANNELS_REQUEST;
-            }
             device->FmtChans = DevFmtX61;
             break;
         case 8:
-            if((device->Flags&DEVICE_CHANNELS_REQUEST) &&
-               device->FmtChans != DevFmtX71)
-            {
-                ERR("Failed to set %s, got 7.1 Surround instead\n", DevFmtChannelsString(device->FmtChans));
-                device->Flags &= ~DEVICE_CHANNELS_REQUEST;
-            }
             device->FmtChans = DevFmtX71;
             break;
         default:
             ERR("Unhandled channel count (%d), using Stereo\n", streamFormat.mChannelsPerFrame);
-            device->Flags &= ~DEVICE_CHANNELS_REQUEST;
             device->FmtChans = DevFmtStereo;
             streamFormat.mChannelsPerFrame = 2;
             break;
@@ -337,6 +297,14 @@ static ALCboolean ca_reset_playback(ALCdevice *device)
             streamFormat.mBytesPerPacket = 2 * streamFormat.mChannelsPerFrame;
             streamFormat.mBytesPerFrame = 2 * streamFormat.mChannelsPerFrame;
             break;
+        case DevFmtUInt:
+            device->FmtType = DevFmtInt;
+            /* fall-through */
+        case DevFmtInt:
+            streamFormat.mBitsPerChannel = 32;
+            streamFormat.mBytesPerPacket = 2 * streamFormat.mChannelsPerFrame;
+            streamFormat.mBytesPerFrame = 2 * streamFormat.mChannelsPerFrame;
+            break;
     }
     streamFormat.mFormatID = kAudioFormatLinearPCM;
     streamFormat.mFormatFlags = kLinearPCMFormatFlagIsSignedInteger |
@@ -362,6 +330,29 @@ static ALCboolean ca_reset_playback(ALCdevice *device)
         return ALC_FALSE;
     }
 
+    /* init the default audio unit... */
+    err = AudioUnitInitialize(data->audioUnit);
+    if(err != noErr)
+    {
+        ERR("AudioUnitInitialize failed\n");
+        return ALC_FALSE;
+    }
+
+    return ALC_TRUE;
+}
+
+static ALCboolean ca_start_playback(ALCdevice *device)
+{
+    ca_data *data = (ca_data*)device->ExtraData;
+    OSStatus err;
+
+    err = AudioOutputUnitStart(data->audioUnit);
+    if(err != noErr)
+    {
+        ERR("AudioOutputUnitStart failed\n");
+        return ALC_FALSE;
+    }
+
     return ALC_TRUE;
 }
 
@@ -370,10 +361,9 @@ static void ca_stop_playback(ALCdevice *device)
     ca_data *data = (ca_data*)device->ExtraData;
     OSStatus err;
 
-    AudioOutputUnitStop(data->audioUnit);
-    err = AudioUnitUninitialize(data->audioUnit);
+    err = AudioOutputUnitStop(data->audioUnit);
     if(err != noErr)
-        ERR("-- AudioUnitUninitialize failed.\n");
+        ERR("AudioOutputUnitStop failed\n");
 }
 
 static ALCenum ca_open_capture(ALCdevice *device, const ALCchar *deviceName)
@@ -496,12 +486,17 @@ static ALCenum ca_open_capture(ALCdevice *device, const ALCchar *deviceName)
             requestedFormat.mBitsPerChannel = 16;
             requestedFormat.mFormatFlags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagsNativeEndian | kAudioFormatFlagIsPacked;
             break;
+        case DevFmtInt:
+            requestedFormat.mBitsPerChannel = 32;
+            requestedFormat.mFormatFlags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagsNativeEndian | kAudioFormatFlagIsPacked;
+            break;
         case DevFmtFloat:
             requestedFormat.mBitsPerChannel = 32;
             requestedFormat.mFormatFlags = kAudioFormatFlagIsPacked;
             break;
         case DevFmtByte:
         case DevFmtUShort:
+        case DevFmtUInt:
             ERR("%s samples not supported\n", DevFmtTypeString(device->FmtType));
             goto error;
     }
@@ -673,6 +668,7 @@ static const BackendFuncs ca_funcs = {
     ca_open_playback,
     ca_close_playback,
     ca_reset_playback,
+    ca_start_playback,
     ca_stop_playback,
     ca_open_capture,
     ca_close_capture,
@@ -696,9 +692,6 @@ void alc_ca_probe(enum DevProbe type)
 {
     switch(type)
     {
-        case DEVICE_PROBE:
-            AppendDeviceList(ca_device);
-            break;
         case ALL_DEVICE_PROBE:
             AppendAllDeviceList(ca_device);
             break;
