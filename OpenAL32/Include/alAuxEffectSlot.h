@@ -41,7 +41,7 @@ ALvoid ReleaseALAuxiliaryEffectSlots(ALCcontext *Context);
 struct ALeffectState {
     ALvoid (*Destroy)(ALeffectState *State);
     ALboolean (*DeviceUpdate)(ALeffectState *State, ALCdevice *Device);
-    ALvoid (*Update)(ALeffectState *State, ALCcontext *Context, const ALeffectslot *Slot);
+    ALvoid (*Update)(ALeffectState *State, ALCdevice *Device, const ALeffectslot *Slot);
     ALvoid (*Process)(ALeffectState *State, ALuint SamplesToDo, const ALfloat *SamplesIn, ALfloat (*SamplesOut)[MAXCHANNELS]);
 };
 
@@ -56,7 +56,7 @@ ALeffectState *DedicatedCreate(void);
 #define ALeffectState_Update(a,b,c)     ((a)->Update((a),(b),(c)))
 #define ALeffectState_Process(a,b,c,d)  ((a)->Process((a),(b),(c),(d)))
 
-ALvoid InitializeEffect(ALCcontext *Context, ALeffectslot *EffectSlot, ALeffect *effect);
+ALenum InitializeEffect(ALCdevice *Device, ALeffectslot *EffectSlot, ALeffect *effect);
 
 #ifdef __cplusplus
 }

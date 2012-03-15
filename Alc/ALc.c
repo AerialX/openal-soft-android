@@ -367,7 +367,7 @@ static ALCdevice *volatile DeviceList = NULL;
 // Thread-local current context
 static pthread_key_t LocalContext;
 // Process-wide current context
-static ALCcontext *GlobalContext;
+static ALCcontext *volatile GlobalContext = NULL;
 
 /* Device Error */
 static volatile ALCenum g_eLastNullDeviceError = ALC_NO_ERROR;
@@ -400,7 +400,7 @@ static ALCboolean TrapALCError = ALC_FALSE;
 static pthread_once_t alc_config_once = PTHREAD_ONCE_INIT;
 
 /* Forced effect that applies to sources that don't have an effect on send 0 */
-static ALeffect ForcedEffect;
+static ALeffect DefaultEffect;
 
 ///////////////////////////////////////////////////////
 
@@ -725,12 +725,10 @@ static void alc_initconfig(void)
         } while(next++);
     }
 
-    InitEffect(&ForcedEffect);
+    InitEffect(&DefaultEffect);
     str = getenv("ALSOFT_DEFAULT_REVERB");
-    if(str && str[0])
-        GetReverbEffect(str, &ForcedEffect);
-    else if(ConfigValueStr(NULL, "default-reverb", &str))
-        GetReverbEffect(str, &ForcedEffect);
+    if((str && str[0]) || ConfigValueStr(NULL, "default-reverb", &str))
+        LoadReverbPreset(str, &DefaultEffect);
 }
 
 
@@ -1310,7 +1308,7 @@ static ALCenum UpdateDeviceParams(ALCdevice *device, const ALCint *attrList)
                 return ALC_INVALID_DEVICE;
             }
             slot->NeedsUpdate = AL_FALSE;
-            ALeffectState_Update(slot->EffectState, context, slot);
+            ALeffectState_Update(slot->EffectState, device, slot);
         }
         UnlockUIntMapRead(&context->EffectSlotMap);
 
@@ -1334,6 +1332,19 @@ static ALCenum UpdateDeviceParams(ALCdevice *device, const ALCint *attrList)
         UnlockUIntMapRead(&context->SourceMap);
 
         context = context->next;
+    }
+    if(device->DefaultSlot)
+    {
+        ALeffectslot *slot = device->DefaultSlot;
+
+        if(ALeffectState_DeviceUpdate(slot->EffectState, device) == AL_FALSE)
+        {
+            UnlockDevice(device);
+            RestoreFPUMode(oldMode);
+            return ALC_INVALID_DEVICE;
+        }
+        slot->NeedsUpdate = AL_FALSE;
+        ALeffectState_Update(slot->EffectState, device, slot);
     }
     UnlockDevice(device);
     RestoreFPUMode(oldMode);
@@ -2299,10 +2310,6 @@ ALC_API ALCcontext* ALC_APIENTRY alcCreateContext(ALCdevice *device, const ALCin
     } while(!CompExchangePtr((XchgPtr*)&device->ContextList, ALContext->next, ALContext));
     UnlockLists();
 
-    if(device->DefaultSlot)
-        InitializeEffect(ALContext, device->DefaultSlot, &ForcedEffect);
-    ALContext->LastError = AL_NO_ERROR;
-
     ALCdevice_DecRef(device);
 
     TRACE("Created context %p\n", ALContext);
@@ -2479,8 +2486,8 @@ ALC_API ALCdevice* ALC_APIENTRY alcOpenDevice(const ALCchar *deviceName)
     InitUIntMap(&device->FilterMap, ~0);
 
     //Set output format
-    device->FmtChans = DevFmtStereo;
-    device->FmtType = DevFmtFloat;
+    device->FmtChans = DevFmtChannelsDefault;
+    device->FmtType = DevFmtTypeDefault;
     device->Frequency = DEFAULT_OUTPUT_RATE;
     device->NumUpdates = 4;
     device->UpdateSize = 1024;
@@ -2618,13 +2625,6 @@ ALC_API ALCdevice* ALC_APIENTRY alcOpenDevice(const ALCchar *deviceName)
     device->NumStereoSources = 1;
     device->NumMonoSources = device->MaxNoOfSources - device->NumStereoSources;
 
-    if(ForcedEffect.type != AL_EFFECT_NULL)
-    {
-        device->DefaultSlot = (ALeffectslot*)(device+1);
-        if(InitEffectSlot(device->DefaultSlot) != AL_NO_ERROR)
-            device->DefaultSlot = NULL;
-    }
-
     // Find a playback device to open
     LockLists();
     if((err=ALCdevice_OpenPlayback(device, deviceName)) != ALC_NO_ERROR)
@@ -2636,6 +2636,22 @@ ALC_API ALCdevice* ALC_APIENTRY alcOpenDevice(const ALCchar *deviceName)
         return NULL;
     }
     UnlockLists();
+
+    if(DefaultEffect.type != AL_EFFECT_NULL)
+    {
+        device->DefaultSlot = (ALeffectslot*)(device+1);
+        if(InitEffectSlot(device->DefaultSlot) != AL_NO_ERROR)
+        {
+            device->DefaultSlot = NULL;
+            ERR("Failed to initialize the default effect slot\n");
+        }
+        else if(InitializeEffect(device, device->DefaultSlot, &DefaultEffect) != AL_NO_ERROR)
+        {
+            ALeffectState_Destroy(device->DefaultSlot->EffectState);
+            device->DefaultSlot = NULL;
+            ERR("Failed to initialize the default effect\n");
+        }
+    }
 
     do {
         device->next = DeviceList;
@@ -2737,9 +2753,9 @@ ALC_API ALCdevice* ALC_APIENTRY alcLoopbackOpenDeviceSOFT(const ALCchar *deviceN
     device->NumUpdates = 0;
     device->UpdateSize = 0;
 
-    device->Frequency = 44100;
-    device->FmtChans = DevFmtStereo;
-    device->FmtType = DevFmtShort;
+    device->Frequency = DEFAULT_OUTPUT_RATE;
+    device->FmtChans = DevFmtChannelsDefault;
+    device->FmtType = DevFmtTypeDefault;
 
     ConfigValueUInt(NULL, "sources", &device->MaxNoOfSources);
     if(device->MaxNoOfSources == 0) device->MaxNoOfSources = 256;
