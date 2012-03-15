@@ -210,7 +210,15 @@ static ALCboolean android_reset_playback(ALCdevice *device)
 
     SetDefaultChannelOrder(device);
 
+    return ALC_TRUE;
+}
+
+static ALCboolean android_start_playback(ALCdevice* device)
+{
+    AndroidData* data = (AndroidData*)device->ExtraData;
+
     data->running = 1;
+
     pthread_create(&data->thread, NULL, thread_function, device);
 
     return ALC_TRUE;
@@ -231,6 +239,7 @@ static const BackendFuncs android_funcs = {
     android_open_playback,
     android_close_playback,
     android_reset_playback,
+    android_start_playback,
     android_stop_playback,
     NULL,
     NULL,
@@ -258,9 +267,6 @@ void alc_android_probe(enum DevProbe type)
 {
     switch(type)
     {
-        case DEVICE_PROBE:
-            AppendDeviceList(android_device);
-            break;
         case ALL_DEVICE_PROBE:
             AppendAllDeviceList(android_device);
             break;
