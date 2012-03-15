@@ -184,6 +184,9 @@ static ALCenum android_open_playback(ALCdevice *device, const ALCchar *deviceNam
     device->szDeviceName = strdup(deviceName);
     device->ExtraData = data;
 
+    device->FmtChans = DevFmtStereo;
+    device->FmtType = DevFmtShort;
+
 #ifdef HAVE_ANDROID_LOW_LATENCY
     device->Frequency = 22050;
     device->NumUpdates = 1;
