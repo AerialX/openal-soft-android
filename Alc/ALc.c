@@ -342,11 +342,11 @@ static ALCchar *alcCaptureDefaultDeviceSpecifier;
 
 static const ALCchar alcNoDeviceExtList[] =
     "ALC_ENUMERATE_ALL_EXT ALC_ENUMERATION_EXT ALC_EXT_CAPTURE "
-    "ALC_EXT_thread_local_context ALC_SOFTX_loopback_device";
+    "ALC_EXT_thread_local_context ALC_SOFT_loopback";
 static const ALCchar alcExtensionList[] =
     "ALC_ENUMERATE_ALL_EXT ALC_ENUMERATION_EXT ALC_EXT_CAPTURE "
     "ALC_EXT_DEDICATED ALC_EXT_disconnect ALC_EXT_EFX "
-    "ALC_EXT_thread_local_context ALC_SOFTX_loopback_device";
+    "ALC_EXT_thread_local_context ALC_SOFT_loopback";
 static const ALCint alcMajorVersion = 1;
 static const ALCint alcMinorVersion = 1;
 
@@ -2791,11 +2791,10 @@ ALC_API ALCboolean ALC_APIENTRY alcIsRenderFormatSupportedSOFT(ALCdevice *device
         alcSetError(device, ALC_INVALID_DEVICE);
     else if(freq <= 0)
         alcSetError(device, ALC_INVALID_VALUE);
-    else if(!IsValidALCType(type) || !IsValidALCChannels(channels))
-        alcSetError(device, ALC_INVALID_ENUM);
     else
     {
-        if(BytesFromDevFmt(type) > 0 && ChannelsFromDevFmt(channels) > 0 &&
+        if(IsValidALCType(type) && BytesFromDevFmt(type) > 0 &&
+           IsValidALCChannels(channels) && ChannelsFromDevFmt(channels) > 0 &&
            freq >= MIN_OUTPUT_RATE)
             ret = ALC_TRUE;
     }
