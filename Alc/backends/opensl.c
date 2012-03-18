@@ -297,10 +297,10 @@ static ALCboolean opensl_reset_playback(ALCdevice *Device)
     format_pcm.channelMask = GetChannelMask(Device->FmtChans);
 #ifdef HAVE_OPENSL_1_1
     format_pcm.endianness = SL_BYTEORDER_NATIVE;
-#elif _BYTE_ORDER == _BIG_ENDIAN
-    format_pcm.endianness = SL_BYTEORDER_BIGENDIAN;
 #else
-    format_pcm.endianness = SL_BYTEORDER_LITTLEENDIAN;
+	union { unsigned short num; char buf[sizeof(unsigned short)]; } endianness;
+	endianness.num = 1;
+	format_pcm.endianness = endianness.buf[0] ? SL_BYTEORDER_LITTLEENDIAN : SL_BYTEORDER_BIGENDIAN;
 #endif
 
     audioSrc.pLocator = &loc_bufq;
