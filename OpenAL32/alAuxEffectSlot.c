@@ -13,8 +13,8 @@
  *
  * You should have received a copy of the GNU Library General Public
  *  License along with this library; if not, write to the
- *  Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- *  Boston, MA  02111-1307, USA.
+ *  Free Software Foundation, Inc.,
+ *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  * Or go to http://www.gnu.org/copyleft/lgpl.html
  */
 
@@ -27,604 +27,776 @@
 #include "AL/alc.h"
 #include "alMain.h"
 #include "alAuxEffectSlot.h"
-#include "alThunk.h"
 #include "alError.h"
+#include "alListener.h"
 #include "alSource.h"
 
+#include "fpu_modes.h"
+#include "almalloc.h"
 
-static ALenum ResizeEffectSlotArray(ALCcontext *Context, ALsizei count);
-static ALvoid RemoveEffectSlotArray(ALCcontext *Context, ALeffectslot *val);
+
+extern inline void LockEffectSlotList(ALCcontext *context);
+extern inline void UnlockEffectSlotList(ALCcontext *context);
+
+static void AddActiveEffectSlots(const ALuint *slotids, ALsizei count, ALCcontext *context);
+static void RemoveActiveEffectSlots(const ALuint *slotids, ALsizei count, ALCcontext *context);
+
+static const struct {
+    ALenum Type;
+    EffectStateFactory* (*GetFactory)(void);
+} FactoryList[] = {
+    { AL_EFFECT_NULL, NullStateFactory_getFactory },
+    { AL_EFFECT_EAXREVERB, ReverbStateFactory_getFactory },
+    { AL_EFFECT_REVERB, ReverbStateFactory_getFactory },
+    { AL_EFFECT_AUTOWAH, AutowahStateFactory_getFactory },
+    { AL_EFFECT_CHORUS, ChorusStateFactory_getFactory },
+    { AL_EFFECT_COMPRESSOR, CompressorStateFactory_getFactory },
+    { AL_EFFECT_DISTORTION, DistortionStateFactory_getFactory },
+    { AL_EFFECT_ECHO, EchoStateFactory_getFactory },
+    { AL_EFFECT_EQUALIZER, EqualizerStateFactory_getFactory },
+    { AL_EFFECT_FLANGER, FlangerStateFactory_getFactory },
+    { AL_EFFECT_FREQUENCY_SHIFTER, FshifterStateFactory_getFactory },
+    { AL_EFFECT_RING_MODULATOR, ModulatorStateFactory_getFactory },
+    { AL_EFFECT_PITCH_SHIFTER, PshifterStateFactory_getFactory},
+    { AL_EFFECT_DEDICATED_DIALOGUE, DedicatedStateFactory_getFactory },
+    { AL_EFFECT_DEDICATED_LOW_FREQUENCY_EFFECT, DedicatedStateFactory_getFactory }
+};
+
+static inline EffectStateFactory *getFactoryByType(ALenum type)
+{
+    size_t i;
+    for(i = 0;i < COUNTOF(FactoryList);i++)
+    {
+        if(FactoryList[i].Type == type)
+            return FactoryList[i].GetFactory();
+    }
+    return NULL;
+}
+
+static void ALeffectState_IncRef(ALeffectState *state);
+
+
+static inline ALeffectslot *LookupEffectSlot(ALCcontext *context, ALuint id)
+{
+    id--;
+    if(UNLIKELY(id >= VECTOR_SIZE(context->EffectSlotList)))
+        return NULL;
+    return VECTOR_ELEM(context->EffectSlotList, id);
+}
+
+static inline ALeffect *LookupEffect(ALCdevice *device, ALuint id)
+{
+    EffectSubList *sublist;
+    ALuint lidx = (id-1) >> 6;
+    ALsizei slidx = (id-1) & 0x3f;
+
+    if(UNLIKELY(lidx >= VECTOR_SIZE(device->EffectList)))
+        return NULL;
+    sublist = &VECTOR_ELEM(device->EffectList, lidx);
+    if(UNLIKELY(sublist->FreeMask & (U64(1)<<slidx)))
+        return NULL;
+    return sublist->Effects + slidx;
+}
+
+
+#define DO_UPDATEPROPS() do {                                                 \
+    if(!ATOMIC_LOAD(&context->DeferUpdates, almemory_order_acquire))          \
+        UpdateEffectSlotProps(slot, context);                                 \
+    else                                                                      \
+        ATOMIC_FLAG_CLEAR(&slot->PropsClean, almemory_order_release);         \
+} while(0)
 
 
 AL_API ALvoid AL_APIENTRY alGenAuxiliaryEffectSlots(ALsizei n, ALuint *effectslots)
 {
-    ALCcontext *Context;
+    ALCdevice *device;
+    ALCcontext *context;
+    ALsizei cur;
 
-    Context = GetContextRef();
-    if(!Context) return;
+    context = GetContextRef();
+    if(!context) return;
 
-    if(n < 0 || IsBadWritePtr((void*)effectslots, n * sizeof(ALuint)))
-        alSetError(Context, AL_INVALID_VALUE);
-    else
+    if(!(n >= 0))
+        SETERR_GOTO(context, AL_INVALID_VALUE, done, "Generating %d effect slots", n);
+    if(n == 0) goto done;
+
+    LockEffectSlotList(context);
+    device = context->Device;
+    for(cur = 0;cur < n;cur++)
     {
-        ALenum err;
-        ALsizei i;
+        ALeffectslotPtr *iter = VECTOR_BEGIN(context->EffectSlotList);
+        ALeffectslotPtr *end = VECTOR_END(context->EffectSlotList);
+        ALeffectslot *slot = NULL;
+        ALenum err = AL_OUT_OF_MEMORY;
 
-        err = ResizeEffectSlotArray(Context, n);
-        if(err != AL_NO_ERROR)
+        for(;iter != end;iter++)
         {
-            alSetError(Context, err);
-            n = 0;
+            if(!*iter)
+                break;
         }
-
-        for(i = 0;i < n;i++)
+        if(iter == end)
         {
-            ALeffectslot *slot = calloc(1, sizeof(ALeffectslot));
-            if(!slot || InitEffectSlot(slot) != AL_NO_ERROR)
+            if(device->AuxiliaryEffectSlotMax == VECTOR_SIZE(context->EffectSlotList))
             {
-                free(slot);
-                // We must have run out or memory
-                alSetError(Context, AL_OUT_OF_MEMORY);
-                alDeleteAuxiliaryEffectSlots(i, effectslots);
-                break;
+                UnlockEffectSlotList(context);
+                alDeleteAuxiliaryEffectSlots(cur, effectslots);
+                SETERR_GOTO(context, AL_OUT_OF_MEMORY, done,
+                    "Exceeding %u auxiliary effect slot limit", device->AuxiliaryEffectSlotMax);
             }
-
-            LockContext(Context);
-            err = ResizeEffectSlotArray(Context, 1);
-            if(err == AL_NO_ERROR)
-                Context->ActiveEffectSlots[Context->ActiveEffectSlotCount++] = slot;
-            UnlockContext(Context);
-            if(err == AL_NO_ERROR)
-                err = NewThunkEntry(&slot->effectslot);
-            if(err == AL_NO_ERROR)
-                err = InsertUIntMapEntry(&Context->EffectSlotMap, slot->effectslot, slot);
-            if(err != AL_NO_ERROR)
-            {
-                RemoveEffectSlotArray(Context, slot);
-                FreeThunkEntry(slot->effectslot);
-                ALeffectState_Destroy(slot->EffectState);
-                free(slot);
-
-                alSetError(Context, err);
-                alDeleteAuxiliaryEffectSlots(i, effectslots);
-                break;
-            }
-
-            effectslots[i] = slot->effectslot;
+            VECTOR_PUSH_BACK(context->EffectSlotList, NULL);
+            iter = &VECTOR_BACK(context->EffectSlotList);
         }
+        slot = al_calloc(16, sizeof(ALeffectslot));
+        if(!slot || (err=InitEffectSlot(slot)) != AL_NO_ERROR)
+        {
+            al_free(slot);
+            UnlockEffectSlotList(context);
+
+            alDeleteAuxiliaryEffectSlots(cur, effectslots);
+            SETERR_GOTO(context, err, done, "Effect slot object allocation failed");
+        }
+        aluInitEffectPanning(slot);
+
+        slot->id = (iter - VECTOR_BEGIN(context->EffectSlotList)) + 1;
+        *iter = slot;
+
+        effectslots[cur] = slot->id;
     }
+    AddActiveEffectSlots(effectslots, n, context);
+    UnlockEffectSlotList(context);
 
-    ALCcontext_DecRef(Context);
+done:
+    ALCcontext_DecRef(context);
 }
 
 AL_API ALvoid AL_APIENTRY alDeleteAuxiliaryEffectSlots(ALsizei n, const ALuint *effectslots)
 {
-    ALCcontext *Context;
-    ALeffectslot *EffectSlot;
+    ALCcontext *context;
+    ALeffectslot *slot;
     ALsizei i;
 
-    Context = GetContextRef();
-    if(!Context) return;
+    context = GetContextRef();
+    if(!context) return;
 
-    if(n < 0)
-        alSetError(Context, AL_INVALID_VALUE);
-    else
+    LockEffectSlotList(context);
+    if(!(n >= 0))
+        SETERR_GOTO(context, AL_INVALID_VALUE, done, "Deleting %d effect slots", n);
+    if(n == 0) goto done;
+
+    for(i = 0;i < n;i++)
     {
-        // Check that all effectslots are valid
-        for(i = 0;i < n;i++)
-        {
-            if((EffectSlot=LookupEffectSlot(Context, effectslots[i])) == NULL)
-            {
-                alSetError(Context, AL_INVALID_NAME);
-                n = 0;
-                break;
-            }
-            else if(EffectSlot->ref != 0)
-            {
-                alSetError(Context, AL_INVALID_OPERATION);
-                n = 0;
-                break;
-            }
-        }
-
-        // All effectslots are valid
-        for(i = 0;i < n;i++)
-        {
-            // Recheck that the effectslot is valid, because there could be duplicated names
-            if((EffectSlot=RemoveEffectSlot(Context, effectslots[i])) == NULL)
-                continue;
-            FreeThunkEntry(EffectSlot->effectslot);
-
-            RemoveEffectSlotArray(Context, EffectSlot);
-            ALeffectState_Destroy(EffectSlot->EffectState);
-
-            memset(EffectSlot, 0, sizeof(ALeffectslot));
-            free(EffectSlot);
-        }
+        if((slot=LookupEffectSlot(context, effectslots[i])) == NULL)
+            SETERR_GOTO(context, AL_INVALID_NAME, done, "Invalid effect slot ID %u",
+                        effectslots[i]);
+        if(ReadRef(&slot->ref) != 0)
+            SETERR_GOTO(context, AL_INVALID_NAME, done, "Deleting in-use effect slot %u",
+                        effectslots[i]);
     }
 
-    ALCcontext_DecRef(Context);
+    // All effectslots are valid
+    RemoveActiveEffectSlots(effectslots, n, context);
+    for(i = 0;i < n;i++)
+    {
+        if((slot=LookupEffectSlot(context, effectslots[i])) == NULL)
+            continue;
+        VECTOR_ELEM(context->EffectSlotList, effectslots[i]-1) = NULL;
+
+        DeinitEffectSlot(slot);
+
+        memset(slot, 0, sizeof(*slot));
+        al_free(slot);
+    }
+
+done:
+    UnlockEffectSlotList(context);
+    ALCcontext_DecRef(context);
 }
 
 AL_API ALboolean AL_APIENTRY alIsAuxiliaryEffectSlot(ALuint effectslot)
 {
-    ALCcontext *Context;
-    ALboolean  result;
+    ALCcontext *context;
+    ALboolean  ret;
 
-    Context = GetContextRef();
-    if(!Context) return AL_FALSE;
+    context = GetContextRef();
+    if(!context) return AL_FALSE;
 
-    result = (LookupEffectSlot(Context, effectslot) ? AL_TRUE : AL_FALSE);
+    LockEffectSlotList(context);
+    ret = (LookupEffectSlot(context, effectslot) ? AL_TRUE : AL_FALSE);
+    UnlockEffectSlotList(context);
 
-    ALCcontext_DecRef(Context);
+    ALCcontext_DecRef(context);
 
-    return result;
+    return ret;
 }
 
-AL_API ALvoid AL_APIENTRY alAuxiliaryEffectSloti(ALuint effectslot, ALenum param, ALint iValue)
+AL_API ALvoid AL_APIENTRY alAuxiliaryEffectSloti(ALuint effectslot, ALenum param, ALint value)
 {
-    ALCdevice *Device;
-    ALCcontext *Context;
-    ALeffectslot *EffectSlot;
+    ALCdevice *device;
+    ALCcontext *context;
+    ALeffectslot *slot;
+    ALeffect *effect = NULL;
+    ALenum err;
 
-    Context = GetContextRef();
-    if(!Context) return;
+    context = GetContextRef();
+    if(!context) return;
 
-    Device = Context->Device;
-    if((EffectSlot=LookupEffectSlot(Context, effectslot)) != NULL)
+    almtx_lock(&context->PropLock);
+    LockEffectSlotList(context);
+    if((slot=LookupEffectSlot(context, effectslot)) == NULL)
+        SETERR_GOTO(context, AL_INVALID_NAME, done, "Invalid effect slot ID %u", effectslot);
+    switch(param)
     {
-        switch(param)
+    case AL_EFFECTSLOT_EFFECT:
+        device = context->Device;
+
+        LockEffectList(device);
+        effect = (value ? LookupEffect(device, value) : NULL);
+        if(!(value == 0 || effect != NULL))
         {
-        case AL_EFFECTSLOT_EFFECT: {
-            ALeffect *effect = NULL;
-
-            if(iValue == 0 ||
-               (effect=LookupEffect(Device, iValue)) != NULL)
-            {
-                ALenum err;
-                err = InitializeEffect(Device, EffectSlot, effect);
-                if(err != AL_NO_ERROR)
-                    alSetError(Context, err);
-                else
-                    Context->UpdateSources = AL_TRUE;
-            }
-            else
-                alSetError(Context, AL_INVALID_VALUE);
-        }   break;
-
-        case AL_EFFECTSLOT_AUXILIARY_SEND_AUTO:
-            if(iValue == AL_TRUE || iValue == AL_FALSE)
-            {
-                EffectSlot->AuxSendAuto = iValue;
-                Context->UpdateSources = AL_TRUE;
-            }
-            else
-                alSetError(Context, AL_INVALID_VALUE);
-            break;
-
-        default:
-            alSetError(Context, AL_INVALID_ENUM);
-            break;
+            UnlockEffectList(device);
+            SETERR_GOTO(context, AL_INVALID_VALUE, done, "Invalid effect ID %u", value);
         }
-    }
-    else
-        alSetError(Context, AL_INVALID_NAME);
+        err = InitializeEffect(context, slot, effect);
+        UnlockEffectList(device);
 
-    ALCcontext_DecRef(Context);
+        if(err != AL_NO_ERROR)
+            SETERR_GOTO(context, err, done, "Effect initialization failed");
+        break;
+
+    case AL_EFFECTSLOT_AUXILIARY_SEND_AUTO:
+        if(!(value == AL_TRUE || value == AL_FALSE))
+            SETERR_GOTO(context, AL_INVALID_VALUE, done,
+                        "Effect slot auxiliary send auto out of range");
+        slot->AuxSendAuto = value;
+        break;
+
+    default:
+        SETERR_GOTO(context, AL_INVALID_ENUM, done, "Invalid effect slot integer property 0x%04x",
+                    param);
+    }
+    DO_UPDATEPROPS();
+
+done:
+    UnlockEffectSlotList(context);
+    almtx_unlock(&context->PropLock);
+    ALCcontext_DecRef(context);
 }
 
-AL_API ALvoid AL_APIENTRY alAuxiliaryEffectSlotiv(ALuint effectslot, ALenum param, const ALint *piValues)
+AL_API ALvoid AL_APIENTRY alAuxiliaryEffectSlotiv(ALuint effectslot, ALenum param, const ALint *values)
 {
-    ALCcontext *Context;
+    ALCcontext *context;
 
     switch(param)
     {
-        case AL_EFFECTSLOT_EFFECT:
-        case AL_EFFECTSLOT_AUXILIARY_SEND_AUTO:
-            alAuxiliaryEffectSloti(effectslot, param, piValues[0]);
-            return;
+    case AL_EFFECTSLOT_EFFECT:
+    case AL_EFFECTSLOT_AUXILIARY_SEND_AUTO:
+        alAuxiliaryEffectSloti(effectslot, param, values[0]);
+        return;
     }
 
-    Context = GetContextRef();
-    if(!Context) return;
+    context = GetContextRef();
+    if(!context) return;
 
-    if(LookupEffectSlot(Context, effectslot) != NULL)
+    LockEffectSlotList(context);
+    if(LookupEffectSlot(context, effectslot) == NULL)
+        SETERR_GOTO(context, AL_INVALID_NAME, done, "Invalid effect slot ID %u", effectslot);
+    switch(param)
     {
-        switch(param)
-        {
-        default:
-            alSetError(Context, AL_INVALID_ENUM);
-            break;
-        }
+    default:
+        alSetError(context, AL_INVALID_ENUM, "Invalid effect slot integer-vector property 0x%04x",
+                   param);
     }
-    else
-        alSetError(Context, AL_INVALID_NAME);
 
-    ALCcontext_DecRef(Context);
+done:
+    UnlockEffectSlotList(context);
+    ALCcontext_DecRef(context);
 }
 
-AL_API ALvoid AL_APIENTRY alAuxiliaryEffectSlotf(ALuint effectslot, ALenum param, ALfloat flValue)
+AL_API ALvoid AL_APIENTRY alAuxiliaryEffectSlotf(ALuint effectslot, ALenum param, ALfloat value)
 {
-    ALCcontext *Context;
-    ALeffectslot *EffectSlot;
+    ALCcontext *context;
+    ALeffectslot *slot;
 
-    Context = GetContextRef();
-    if(!Context) return;
+    context = GetContextRef();
+    if(!context) return;
 
-    if((EffectSlot=LookupEffectSlot(Context, effectslot)) != NULL)
+    almtx_lock(&context->PropLock);
+    LockEffectSlotList(context);
+    if((slot=LookupEffectSlot(context, effectslot)) == NULL)
+        SETERR_GOTO(context, AL_INVALID_NAME, done, "Invalid effect slot ID %u", effectslot);
+    switch(param)
     {
-        switch(param)
-        {
-        case AL_EFFECTSLOT_GAIN:
-            if(flValue >= 0.0f && flValue <= 1.0f)
-            {
-                EffectSlot->Gain = flValue;
-                EffectSlot->NeedsUpdate = AL_TRUE;
-            }
-            else
-                alSetError(Context, AL_INVALID_VALUE);
-            break;
+    case AL_EFFECTSLOT_GAIN:
+        if(!(value >= 0.0f && value <= 1.0f))
+            SETERR_GOTO(context, AL_INVALID_VALUE, done, "Effect slot gain out of range");
+        slot->Gain = value;
+        break;
 
-        default:
-            alSetError(Context, AL_INVALID_ENUM);
-            break;
-        }
+    default:
+        SETERR_GOTO(context, AL_INVALID_ENUM, done, "Invalid effect slot float property 0x%04x",
+                    param);
     }
-    else
-        alSetError(Context, AL_INVALID_NAME);
+    DO_UPDATEPROPS();
 
-    ALCcontext_DecRef(Context);
+done:
+    UnlockEffectSlotList(context);
+    almtx_unlock(&context->PropLock);
+    ALCcontext_DecRef(context);
 }
 
-AL_API ALvoid AL_APIENTRY alAuxiliaryEffectSlotfv(ALuint effectslot, ALenum param, const ALfloat *pflValues)
+AL_API ALvoid AL_APIENTRY alAuxiliaryEffectSlotfv(ALuint effectslot, ALenum param, const ALfloat *values)
 {
-    ALCcontext *Context;
+    ALCcontext *context;
 
     switch(param)
     {
-        case AL_EFFECTSLOT_GAIN:
-            alAuxiliaryEffectSlotf(effectslot, param, pflValues[0]);
-            return;
+    case AL_EFFECTSLOT_GAIN:
+        alAuxiliaryEffectSlotf(effectslot, param, values[0]);
+        return;
     }
 
-    Context = GetContextRef();
-    if(!Context) return;
+    context = GetContextRef();
+    if(!context) return;
 
-    if(LookupEffectSlot(Context, effectslot) != NULL)
+    LockEffectSlotList(context);
+    if(LookupEffectSlot(context, effectslot) == NULL)
+        SETERR_GOTO(context, AL_INVALID_NAME, done, "Invalid effect slot ID %u", effectslot);
+    switch(param)
     {
-        switch(param)
-        {
-        default:
-            alSetError(Context, AL_INVALID_ENUM);
-            break;
-        }
+    default:
+        alSetError(context, AL_INVALID_ENUM, "Invalid effect slot float-vector property 0x%04x",
+                   param);
     }
-    else
-        alSetError(Context, AL_INVALID_NAME);
 
-    ALCcontext_DecRef(Context);
+done:
+    UnlockEffectSlotList(context);
+    ALCcontext_DecRef(context);
 }
 
-AL_API ALvoid AL_APIENTRY alGetAuxiliaryEffectSloti(ALuint effectslot, ALenum param, ALint *piValue)
+AL_API ALvoid AL_APIENTRY alGetAuxiliaryEffectSloti(ALuint effectslot, ALenum param, ALint *value)
 {
-    ALCcontext *Context;
-    ALeffectslot *EffectSlot;
+    ALCcontext *context;
+    ALeffectslot *slot;
 
-    Context = GetContextRef();
-    if(!Context) return;
+    context = GetContextRef();
+    if(!context) return;
 
-    if((EffectSlot=LookupEffectSlot(Context, effectslot)) != NULL)
+    LockEffectSlotList(context);
+    if((slot=LookupEffectSlot(context, effectslot)) == NULL)
+        SETERR_GOTO(context, AL_INVALID_NAME, done, "Invalid effect slot ID %u", effectslot);
+    switch(param)
     {
-        switch(param)
-        {
-        case AL_EFFECTSLOT_EFFECT:
-            *piValue = EffectSlot->effect.effect;
-            break;
+    case AL_EFFECTSLOT_AUXILIARY_SEND_AUTO:
+        *value = slot->AuxSendAuto;
+        break;
 
-        case AL_EFFECTSLOT_AUXILIARY_SEND_AUTO:
-            *piValue = EffectSlot->AuxSendAuto;
-            break;
-
-        default:
-            alSetError(Context, AL_INVALID_ENUM);
-            break;
-        }
+    default:
+        alSetError(context, AL_INVALID_ENUM, "Invalid effect slot integer property 0x%04x", param);
     }
-    else
-        alSetError(Context, AL_INVALID_NAME);
 
-    ALCcontext_DecRef(Context);
+done:
+    UnlockEffectSlotList(context);
+    ALCcontext_DecRef(context);
 }
 
-AL_API ALvoid AL_APIENTRY alGetAuxiliaryEffectSlotiv(ALuint effectslot, ALenum param, ALint *piValues)
+AL_API ALvoid AL_APIENTRY alGetAuxiliaryEffectSlotiv(ALuint effectslot, ALenum param, ALint *values)
 {
-    ALCcontext *Context;
+    ALCcontext *context;
 
     switch(param)
     {
-        case AL_EFFECTSLOT_EFFECT:
-        case AL_EFFECTSLOT_AUXILIARY_SEND_AUTO:
-            alGetAuxiliaryEffectSloti(effectslot, param, piValues);
-            return;
+    case AL_EFFECTSLOT_EFFECT:
+    case AL_EFFECTSLOT_AUXILIARY_SEND_AUTO:
+        alGetAuxiliaryEffectSloti(effectslot, param, values);
+        return;
     }
 
-    Context = GetContextRef();
-    if(!Context) return;
+    context = GetContextRef();
+    if(!context) return;
 
-    if(LookupEffectSlot(Context, effectslot) != NULL)
+    LockEffectSlotList(context);
+    if(LookupEffectSlot(context, effectslot) == NULL)
+        SETERR_GOTO(context, AL_INVALID_NAME, done, "Invalid effect slot ID %u", effectslot);
+    switch(param)
     {
-        switch(param)
-        {
-        default:
-            alSetError(Context, AL_INVALID_ENUM);
-            break;
-        }
+    default:
+        alSetError(context, AL_INVALID_ENUM, "Invalid effect slot integer-vector property 0x%04x",
+                   param);
     }
-    else
-        alSetError(Context, AL_INVALID_NAME);
 
-    ALCcontext_DecRef(Context);
+done:
+    UnlockEffectSlotList(context);
+    ALCcontext_DecRef(context);
 }
 
-AL_API ALvoid AL_APIENTRY alGetAuxiliaryEffectSlotf(ALuint effectslot, ALenum param, ALfloat *pflValue)
+AL_API ALvoid AL_APIENTRY alGetAuxiliaryEffectSlotf(ALuint effectslot, ALenum param, ALfloat *value)
 {
-    ALCcontext *Context;
-    ALeffectslot *EffectSlot;
+    ALCcontext *context;
+    ALeffectslot *slot;
 
-    Context = GetContextRef();
-    if(!Context) return;
+    context = GetContextRef();
+    if(!context) return;
 
-    if((EffectSlot=LookupEffectSlot(Context, effectslot)) != NULL)
+    LockEffectSlotList(context);
+    if((slot=LookupEffectSlot(context, effectslot)) == NULL)
+        SETERR_GOTO(context, AL_INVALID_NAME, done, "Invalid effect slot ID %u", effectslot);
+    switch(param)
     {
-        switch(param)
-        {
-        case AL_EFFECTSLOT_GAIN:
-            *pflValue = EffectSlot->Gain;
-            break;
+    case AL_EFFECTSLOT_GAIN:
+        *value = slot->Gain;
+        break;
 
-        default:
-            alSetError(Context, AL_INVALID_ENUM);
-            break;
-        }
+    default:
+        alSetError(context, AL_INVALID_ENUM, "Invalid effect slot float property 0x%04x", param);
     }
-    else
-        alSetError(Context, AL_INVALID_NAME);
 
-    ALCcontext_DecRef(Context);
+done:
+    UnlockEffectSlotList(context);
+    ALCcontext_DecRef(context);
 }
 
-AL_API ALvoid AL_APIENTRY alGetAuxiliaryEffectSlotfv(ALuint effectslot, ALenum param, ALfloat *pflValues)
+AL_API ALvoid AL_APIENTRY alGetAuxiliaryEffectSlotfv(ALuint effectslot, ALenum param, ALfloat *values)
 {
-    ALCcontext *Context;
+    ALCcontext *context;
 
     switch(param)
     {
-        case AL_EFFECTSLOT_GAIN:
-            alGetAuxiliaryEffectSlotf(effectslot, param, pflValues);
-            return;
+    case AL_EFFECTSLOT_GAIN:
+        alGetAuxiliaryEffectSlotf(effectslot, param, values);
+        return;
     }
 
-    Context = GetContextRef();
-    if(!Context) return;
+    context = GetContextRef();
+    if(!context) return;
 
-    if(LookupEffectSlot(Context, effectslot) != NULL)
+    LockEffectSlotList(context);
+    if(LookupEffectSlot(context, effectslot) == NULL)
+        SETERR_GOTO(context, AL_INVALID_NAME, done, "Invalid effect slot ID %u", effectslot);
+    switch(param)
     {
-        switch(param)
-        {
-        default:
-            alSetError(Context, AL_INVALID_ENUM);
-            break;
-        }
+    default:
+        alSetError(context, AL_INVALID_ENUM, "Invalid effect slot float-vector property 0x%04x",
+                   param);
     }
-    else
-        alSetError(Context, AL_INVALID_NAME);
 
-    ALCcontext_DecRef(Context);
+done:
+    UnlockEffectSlotList(context);
+    ALCcontext_DecRef(context);
 }
 
 
-static ALvoid NoneDestroy(ALeffectState *State)
-{ free(State); }
-static ALboolean NoneDeviceUpdate(ALeffectState *State, ALCdevice *Device)
+ALenum InitializeEffect(ALCcontext *Context, ALeffectslot *EffectSlot, ALeffect *effect)
 {
-    return AL_TRUE;
-    (void)State;
-    (void)Device;
-}
-static ALvoid NoneUpdate(ALeffectState *State, ALCdevice *Device, const ALeffectslot *Slot)
-{
-    (void)State;
-    (void)Device;
-    (void)Slot;
-}
-static ALvoid NoneProcess(ALeffectState *State, ALuint SamplesToDo, const ALfloat *SamplesIn, ALfloat (*SamplesOut)[MAXCHANNELS])
-{
-    (void)State;
-    (void)SamplesToDo;
-    (void)SamplesIn;
-    (void)SamplesOut;
-}
-ALeffectState *NoneCreate(void)
-{
-    ALeffectState *state;
-
-    state = calloc(1, sizeof(*state));
-    if(!state)
-        return NULL;
-
-    state->Destroy = NoneDestroy;
-    state->DeviceUpdate = NoneDeviceUpdate;
-    state->Update = NoneUpdate;
-    state->Process = NoneProcess;
-
-    return state;
-}
-
-
-static ALvoid RemoveEffectSlotArray(ALCcontext *Context, ALeffectslot *slot)
-{
-    ALeffectslot **slotlist, **slotlistend;
-
-    LockContext(Context);
-    slotlist = Context->ActiveEffectSlots;
-    slotlistend = slotlist + Context->ActiveEffectSlotCount;
-    while(slotlist != slotlistend)
-    {
-        if(*slotlist == slot)
-        {
-            *slotlist = *(--slotlistend);
-            Context->ActiveEffectSlotCount--;
-            break;
-        }
-        slotlist++;
-    }
-    UnlockContext(Context);
-}
-
-static ALenum ResizeEffectSlotArray(ALCcontext *Context, ALsizei count)
-{
-    ALsizei newcount;
-    void *temp;
-
-    if(count <= Context->MaxActiveEffectSlots-Context->ActiveEffectSlotCount)
-        return AL_NO_ERROR;
-
-    newcount = Context->MaxActiveEffectSlots ?
-               (Context->MaxActiveEffectSlots<<1) : 1;
-    if(newcount <= Context->MaxActiveEffectSlots ||
-       !(temp=realloc(Context->ActiveEffectSlots, newcount *
-                                                  sizeof(*Context->ActiveEffectSlots))))
-        return AL_OUT_OF_MEMORY;
-
-    Context->ActiveEffectSlots = temp;
-    Context->MaxActiveEffectSlots = newcount;
-    return AL_NO_ERROR;
-}
-
-ALenum InitializeEffect(ALCdevice *Device, ALeffectslot *EffectSlot, ALeffect *effect)
-{
+    ALCdevice *Device = Context->Device;
     ALenum newtype = (effect ? effect->type : AL_EFFECT_NULL);
-    ALeffectState *State = NULL;
-    ALenum err = AL_NO_ERROR;
+    struct ALeffectslotProps *props;
+    ALeffectState *State;
 
-    LockDevice(Device);
-    if(newtype == AL_EFFECT_NULL && EffectSlot->effect.type != AL_EFFECT_NULL)
+    if(newtype != EffectSlot->Effect.Type)
     {
-        State = NoneCreate();
-        if(!State) err = AL_OUT_OF_MEMORY;
-    }
-    else if(newtype == AL_EFFECT_EAXREVERB || newtype == AL_EFFECT_REVERB)
-    {
-        if(EffectSlot->effect.type != AL_EFFECT_EAXREVERB && EffectSlot->effect.type != AL_EFFECT_REVERB)
+        EffectStateFactory *factory;
+
+        factory = getFactoryByType(newtype);
+        if(!factory)
         {
-            State = ReverbCreate();
-            if(!State) err = AL_OUT_OF_MEMORY;
+            ERR("Failed to find factory for effect type 0x%04x\n", newtype);
+            return AL_INVALID_ENUM;
         }
-    }
-    else if(newtype == AL_EFFECT_ECHO && EffectSlot->effect.type != AL_EFFECT_ECHO)
-    {
-        State = EchoCreate();
-        if(!State) err = AL_OUT_OF_MEMORY;
-    }
-    else if(newtype == AL_EFFECT_RING_MODULATOR && EffectSlot->effect.type != AL_EFFECT_RING_MODULATOR)
-    {
-        State = ModulatorCreate();
-        if(!State) err = AL_OUT_OF_MEMORY;
-    }
-    else if(newtype == AL_EFFECT_DEDICATED_DIALOGUE || newtype == AL_EFFECT_DEDICATED_LOW_FREQUENCY_EFFECT)
-    {
-        if(EffectSlot->effect.type != AL_EFFECT_DEDICATED_DIALOGUE && EffectSlot->effect.type != AL_EFFECT_DEDICATED_LOW_FREQUENCY_EFFECT)
+        State = EffectStateFactory_create(factory);
+        if(!State) return AL_OUT_OF_MEMORY;
+
+        START_MIXER_MODE();
+        almtx_lock(&Device->BackendLock);
+        State->OutBuffer = Device->Dry.Buffer;
+        State->OutChannels = Device->Dry.NumChannels;
+        if(V(State,deviceUpdate)(Device) == AL_FALSE)
         {
-            State = DedicatedCreate();
-            if(!State) err = AL_OUT_OF_MEMORY;
-        }
-    }
-
-    if(err != AL_NO_ERROR)
-    {
-        UnlockDevice(Device);
-        return err;
-    }
-
-    if(State)
-    {
-        int oldMode;
-        oldMode = SetMixerFPUMode();
-
-        if(ALeffectState_DeviceUpdate(State, Device) == AL_FALSE)
-        {
-            RestoreFPUMode(oldMode);
-            UnlockDevice(Device);
-            ALeffectState_Destroy(State);
+            almtx_unlock(&Device->BackendLock);
+            LEAVE_MIXER_MODE();
+            ALeffectState_DecRef(State);
             return AL_OUT_OF_MEMORY;
         }
-        State = ExchangePtr((XchgPtr*)&EffectSlot->EffectState, State);
+        almtx_unlock(&Device->BackendLock);
+        END_MIXER_MODE();
 
         if(!effect)
-            memset(&EffectSlot->effect, 0, sizeof(EffectSlot->effect));
+        {
+            EffectSlot->Effect.Type = AL_EFFECT_NULL;
+            memset(&EffectSlot->Effect.Props, 0, sizeof(EffectSlot->Effect.Props));
+        }
         else
-            memcpy(&EffectSlot->effect, effect, sizeof(*effect));
-        /* FIXME: This should be done asynchronously, but since the EffectState
-         * object was changed, it needs an update before its Process method can
-         * be called. */
-        EffectSlot->NeedsUpdate = AL_FALSE;
-        ALeffectState_Update(EffectSlot->EffectState, Device, EffectSlot);
-        UnlockDevice(Device);
+        {
+            EffectSlot->Effect.Type = effect->type;
+            EffectSlot->Effect.Props = effect->Props;
+        }
 
-        RestoreFPUMode(oldMode);
-
-        ALeffectState_Destroy(State);
-        State = NULL;
+        ALeffectState_DecRef(EffectSlot->Effect.State);
+        EffectSlot->Effect.State = State;
     }
-    else
+    else if(effect)
+        EffectSlot->Effect.Props = effect->Props;
+
+    /* Remove state references from old effect slot property updates. */
+    props = ATOMIC_LOAD_SEQ(&Context->FreeEffectslotProps);
+    while(props)
     {
-        if(!effect)
-            memset(&EffectSlot->effect, 0, sizeof(EffectSlot->effect));
-        else
-            memcpy(&EffectSlot->effect, effect, sizeof(*effect));
-        UnlockDevice(Device);
-        EffectSlot->NeedsUpdate = AL_TRUE;
+        if(props->State)
+            ALeffectState_DecRef(props->State);
+        props->State = NULL;
+        props = ATOMIC_LOAD(&props->next, almemory_order_relaxed);
     }
 
     return AL_NO_ERROR;
+}
+
+
+static void ALeffectState_IncRef(ALeffectState *state)
+{
+    uint ref;
+    ref = IncrementRef(&state->Ref);
+    TRACEREF("%p increasing refcount to %u\n", state, ref);
+}
+
+void ALeffectState_DecRef(ALeffectState *state)
+{
+    uint ref;
+    ref = DecrementRef(&state->Ref);
+    TRACEREF("%p decreasing refcount to %u\n", state, ref);
+    if(ref == 0) DELETE_OBJ(state);
+}
+
+
+void ALeffectState_Construct(ALeffectState *state)
+{
+    InitRef(&state->Ref, 1);
+
+    state->OutBuffer = NULL;
+    state->OutChannels = 0;
+}
+
+void ALeffectState_Destruct(ALeffectState *UNUSED(state))
+{
+}
+
+
+static void AddActiveEffectSlots(const ALuint *slotids, ALsizei count, ALCcontext *context)
+{
+    struct ALeffectslotArray *curarray = ATOMIC_LOAD(&context->ActiveAuxSlots,
+                                                     almemory_order_acquire);
+    struct ALeffectslotArray *newarray = NULL;
+    ALsizei newcount = curarray->count + count;
+    ALCdevice *device = context->Device;
+    ALsizei i, j;
+
+    /* Insert the new effect slots into the head of the array, followed by the
+     * existing ones.
+     */
+    newarray = al_calloc(DEF_ALIGN, FAM_SIZE(struct ALeffectslotArray, slot, newcount));
+    newarray->count = newcount;
+    for(i = 0;i < count;i++)
+        newarray->slot[i] = LookupEffectSlot(context, slotids[i]);
+    for(j = 0;i < newcount;)
+        newarray->slot[i++] = curarray->slot[j++];
+    /* Remove any duplicates (first instance of each will be kept). */
+    for(i = 1;i < newcount;i++)
+    {
+        for(j = i;j != 0;)
+        {
+            if(UNLIKELY(newarray->slot[i] == newarray->slot[--j]))
+            {
+                newcount--;
+                for(j = i;j < newcount;j++)
+                    newarray->slot[j] = newarray->slot[j+1];
+                i--;
+                break;
+            }
+        }
+    }
+
+    /* Reallocate newarray if the new size ended up smaller from duplicate
+     * removal.
+     */
+    if(UNLIKELY(newcount < newarray->count))
+    {
+        struct ALeffectslotArray *tmpnewarray = al_calloc(DEF_ALIGN,
+            FAM_SIZE(struct ALeffectslotArray, slot, newcount));
+        memcpy(tmpnewarray, newarray, FAM_SIZE(struct ALeffectslotArray, slot, newcount));
+        al_free(newarray);
+        newarray = tmpnewarray;
+        newarray->count = newcount;
+    }
+
+    curarray = ATOMIC_EXCHANGE_PTR(&context->ActiveAuxSlots, newarray, almemory_order_acq_rel);
+    while((ATOMIC_LOAD(&device->MixCount, almemory_order_acquire)&1))
+        althrd_yield();
+    al_free(curarray);
+}
+
+static void RemoveActiveEffectSlots(const ALuint *slotids, ALsizei count, ALCcontext *context)
+{
+    struct ALeffectslotArray *curarray = ATOMIC_LOAD(&context->ActiveAuxSlots,
+                                                     almemory_order_acquire);
+    struct ALeffectslotArray *newarray = NULL;
+    ALCdevice *device = context->Device;
+    ALsizei i, j;
+
+    /* Don't shrink the allocated array size since we don't know how many (if
+     * any) of the effect slots to remove are in the array.
+     */
+    newarray = al_calloc(DEF_ALIGN, FAM_SIZE(struct ALeffectslotArray, slot, curarray->count));
+    newarray->count = 0;
+    for(i = 0;i < curarray->count;i++)
+    {
+        /* Insert this slot into the new array only if it's not one to remove. */
+        ALeffectslot *slot = curarray->slot[i];
+        for(j = count;j != 0;)
+        {
+            if(slot->id == slotids[--j])
+                goto skip_ins;
+        }
+        newarray->slot[newarray->count++] = slot;
+    skip_ins: ;
+    }
+
+    /* TODO: Could reallocate newarray now that we know it's needed size. */
+
+    curarray = ATOMIC_EXCHANGE_PTR(&context->ActiveAuxSlots, newarray, almemory_order_acq_rel);
+    while((ATOMIC_LOAD(&device->MixCount, almemory_order_acquire)&1))
+        althrd_yield();
+    al_free(curarray);
 }
 
 
 ALenum InitEffectSlot(ALeffectslot *slot)
 {
-    ALint i;
+    EffectStateFactory *factory;
 
-    if(!(slot->EffectState=NoneCreate()))
-        return AL_OUT_OF_MEMORY;
+    slot->Effect.Type = AL_EFFECT_NULL;
+
+    factory = getFactoryByType(AL_EFFECT_NULL);
+    slot->Effect.State = EffectStateFactory_create(factory);
+    if(!slot->Effect.State) return AL_OUT_OF_MEMORY;
 
     slot->Gain = 1.0;
     slot->AuxSendAuto = AL_TRUE;
-    slot->NeedsUpdate = AL_FALSE;
-    for(i = 0;i < BUFFERSIZE;i++)
-        slot->WetBuffer[i] = 0.0f;
-    for(i = 0;i < 1;i++)
-    {
-        slot->ClickRemoval[i] = 0.0f;
-        slot->PendingClicks[i] = 0.0f;
-    }
-    slot->ref = 0;
+    ATOMIC_FLAG_TEST_AND_SET(&slot->PropsClean, almemory_order_relaxed);
+    InitRef(&slot->ref, 0);
+
+    ATOMIC_INIT(&slot->Update, NULL);
+
+    slot->Params.Gain = 1.0f;
+    slot->Params.AuxSendAuto = AL_TRUE;
+    ALeffectState_IncRef(slot->Effect.State);
+    slot->Params.EffectState = slot->Effect.State;
+    slot->Params.RoomRolloff = 0.0f;
+    slot->Params.DecayTime = 0.0f;
+    slot->Params.DecayLFRatio = 0.0f;
+    slot->Params.DecayHFRatio = 0.0f;
+    slot->Params.DecayHFLimit = AL_FALSE;
+    slot->Params.AirAbsorptionGainHF = 1.0f;
 
     return AL_NO_ERROR;
 }
 
-ALvoid ReleaseALAuxiliaryEffectSlots(ALCcontext *Context)
+void DeinitEffectSlot(ALeffectslot *slot)
 {
-    ALsizei pos;
-    for(pos = 0;pos < Context->EffectSlotMap.size;pos++)
+    struct ALeffectslotProps *props;
+
+    props = ATOMIC_LOAD_SEQ(&slot->Update);
+    if(props)
     {
-        ALeffectslot *temp = Context->EffectSlotMap.array[pos].value;
-        Context->EffectSlotMap.array[pos].value = NULL;
-
-        // Release effectslot structure
-        ALeffectState_Destroy(temp->EffectState);
-
-        FreeThunkEntry(temp->effectslot);
-        memset(temp, 0, sizeof(ALeffectslot));
-        free(temp);
+        if(props->State) ALeffectState_DecRef(props->State);
+        TRACE("Freed unapplied AuxiliaryEffectSlot update %p\n", props);
+        al_free(props);
     }
+
+    ALeffectState_DecRef(slot->Effect.State);
+    if(slot->Params.EffectState)
+        ALeffectState_DecRef(slot->Params.EffectState);
+}
+
+void UpdateEffectSlotProps(ALeffectslot *slot, ALCcontext *context)
+{
+    struct ALeffectslotProps *props;
+    ALeffectState *oldstate;
+
+    /* Get an unused property container, or allocate a new one as needed. */
+    props = ATOMIC_LOAD(&context->FreeEffectslotProps, almemory_order_relaxed);
+    if(!props)
+        props = al_calloc(16, sizeof(*props));
+    else
+    {
+        struct ALeffectslotProps *next;
+        do {
+            next = ATOMIC_LOAD(&props->next, almemory_order_relaxed);
+        } while(ATOMIC_COMPARE_EXCHANGE_PTR_WEAK(&context->FreeEffectslotProps, &props, next,
+                almemory_order_seq_cst, almemory_order_acquire) == 0);
+    }
+
+    /* Copy in current property values. */
+    props->Gain = slot->Gain;
+    props->AuxSendAuto = slot->AuxSendAuto;
+
+    props->Type = slot->Effect.Type;
+    props->Props = slot->Effect.Props;
+    /* Swap out any stale effect state object there may be in the container, to
+     * delete it.
+     */
+    ALeffectState_IncRef(slot->Effect.State);
+    oldstate = props->State;
+    props->State = slot->Effect.State;
+
+    /* Set the new container for updating internal parameters. */
+    props = ATOMIC_EXCHANGE_PTR(&slot->Update, props, almemory_order_acq_rel);
+    if(props)
+    {
+        /* If there was an unused update container, put it back in the
+         * freelist.
+         */
+        if(props->State)
+            ALeffectState_DecRef(props->State);
+        props->State = NULL;
+        ATOMIC_REPLACE_HEAD(struct ALeffectslotProps*, &context->FreeEffectslotProps, props);
+    }
+
+    if(oldstate)
+        ALeffectState_DecRef(oldstate);
+}
+
+void UpdateAllEffectSlotProps(ALCcontext *context)
+{
+    struct ALeffectslotArray *auxslots;
+    ALsizei i;
+
+    LockEffectSlotList(context);
+    auxslots = ATOMIC_LOAD(&context->ActiveAuxSlots, almemory_order_acquire);
+    for(i = 0;i < auxslots->count;i++)
+    {
+        ALeffectslot *slot = auxslots->slot[i];
+        if(!ATOMIC_FLAG_TEST_AND_SET(&slot->PropsClean, almemory_order_acq_rel))
+            UpdateEffectSlotProps(slot, context);
+    }
+    UnlockEffectSlotList(context);
+}
+
+ALvoid ReleaseALAuxiliaryEffectSlots(ALCcontext *context)
+{
+    ALeffectslotPtr *iter = VECTOR_BEGIN(context->EffectSlotList);
+    ALeffectslotPtr *end = VECTOR_END(context->EffectSlotList);
+    size_t leftover = 0;
+
+    for(;iter != end;iter++)
+    {
+        ALeffectslot *slot = *iter;
+        if(!slot) continue;
+        *iter = NULL;
+
+        DeinitEffectSlot(slot);
+
+        memset(slot, 0, sizeof(*slot));
+        al_free(slot);
+        ++leftover;
+    }
+    if(leftover > 0)
+        WARN("(%p) Deleted "SZFMT" AuxiliaryEffectSlot%s\n", context, leftover, (leftover==1)?"":"s");
 }
